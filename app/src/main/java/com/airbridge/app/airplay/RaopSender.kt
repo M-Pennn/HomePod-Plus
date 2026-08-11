@@ -41,8 +41,14 @@ class RaopSender(
         private const val FRAMES_PER_PACKET = 352
         private const val RATE = 44100
         private const val CHANNELS = 2
-        private const val LATENCY = 22050 + 44100
         private const val BACKLOG_SIZE = 1024
+    }
+
+    /** Receiver buffering policy: lower latency = less jitter tolerance. */
+    enum class LatencyMode(val frames: Int, val min: Int, val max: Int) {
+        STABLE(66150, 11025, 88200),
+        LOW(11025, 4410, 44100),
+        ULTRA(4410, 2205, 22050)
     }
 
     private val ring = PcmRingBuffer(RATE * 3)
@@ -59,6 +65,18 @@ class RaopSender(
 
     @Volatile
     private var wasUserStop = false
+
+    @Volatile
+    var latencyMode = LatencyMode.STABLE
+
+    @Volatile
+    var robustMode = false
+
+    @Volatile
+    private var latencyFrames = LatencyMode.STABLE.frames
+
+    private var wallMs0 = 0L
+    private var elapsedNanos0 = 0L
 
     private var sessionThread: Thread? = null
     private var pacerThread: Thread? = null
@@ -128,6 +146,7 @@ class RaopSender(
     fun start() {
         stop()
         wasUserStop = false
+        latencyFrames = latencyMode.frames
         running = true
         setState(State.CONNECTING)
         sessionThread = Thread({ runSession() }, "raop-session").also { it.start() }
@@ -387,6 +406,15 @@ class RaopSender(
         timingSock = DatagramSocket(0)
         controlSock = DatagramSocket(0)
         audioSock = DatagramSocket(0)
+        // Larger UDP buffers reduce drops during Wi-Fi hiccups.
+        try {
+            audioSock!!.sendBufferSize = 512 * 1024
+            controlSock!!.receiveBufferSize = 256 * 1024
+            timingSock!!.receiveBufferSize = 256 * 1024
+        } catch (_: Exception) {
+        }
+        wallMs0 = System.currentTimeMillis()
+        elapsedNanos0 = android.os.SystemClock.elapsedRealtimeNanos()
         // HomePod probes the sender's UDP timing/control ports DURING SETUP;
         // start the responders now so SETUP doesn't wait 30s and fail.
         startUdpReaders()
@@ -552,8 +580,8 @@ class RaopSender(
                 "controlPort" to PValue.IntV(controlSock!!.localPort.toLong()),
                 "ct" to PValue.IntV(2),
                 "isMedia" to PValue.True,
-                "latencyMax" to PValue.IntV(88200),
-                "latencyMin" to PValue.IntV(11025),
+                "latencyMax" to PValue.IntV(latencyMode.max.toLong()),
+                "latencyMin" to PValue.IntV(latencyMode.min.toLong()),
                 "shk" to PValue.DataV(audioKey),
                 "spf" to PValue.IntV(FRAMES_PER_PACKET.toLong()),
                 "sr" to PValue.IntV(RATE.toLong()),
@@ -1067,12 +1095,13 @@ class RaopSender(
 
     private fun startPacer() {
         pacerThread = Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
             val startNanos = System.nanoTime()
             while (running) {
                 val elapsed = System.nanoTime() - startNanos
                 val target = elapsed * RATE / 1_000_000_000L
                 var sent = 0
-                while (running && framesSent + FRAMES_PER_PACKET <= target && sent < 16) {
+                while (running && framesSent + FRAMES_PER_PACKET <= target && sent < 8) {
                     try {
                         sendAudioPacket()
                     } catch (e: Exception) {
@@ -1095,7 +1124,7 @@ class RaopSender(
         syncThread = Thread({
             while (running) {
                 try {
-                    Thread.sleep(1000)
+                    Thread.sleep(if (robustMode) 500 else 1000)
                 } catch (e: InterruptedException) {
                     break
                 }
@@ -1252,6 +1281,11 @@ class RaopSender(
         }
         val pkt = hdr + wire
         audioSock!!.send(DatagramPacket(pkt, pkt.size, InetAddress.getByName(device.host), serverPort))
+        if (robustMode) {
+            // Proactive redundancy: re-send the same packet so a single UDP
+            // loss on weak Wi-Fi is self-healed without waiting for retransmit.
+            audioSock!!.send(DatagramPacket(pkt, pkt.size, InetAddress.getByName(device.host), serverPort))
+        }
 
         synchronized(backlogLock) {
             backlog[seq and (BACKLOG_SIZE - 1)] = pkt
@@ -1308,17 +1342,19 @@ class RaopSender(
         pkt[1] = 0xD4.toByte()
         pkt[2] = 0
         pkt[3] = 7
-        putU32(pkt, 4, (now - LATENCY) and 0xFFFFFFFFL)
+        putU32(pkt, 4, (now - latencyFrames) and 0xFFFFFFFFL)
         putU32(pkt, 8, (curNtp ushr 32) and 0xFFFFFFFFL)
         putU32(pkt, 12, curNtp and 0xFFFFFFFFL)
         putU32(pkt, 16, now)
         controlSock!!.send(DatagramPacket(pkt, pkt.size, InetAddress.getByName(device.host), controlPort))
     }
 
-    private fun rtptime32(): Long = (LATENCY + framesSent) and 0xFFFFFFFFL
+    private fun rtptime32(): Long = (latencyFrames + framesSent) and 0xFFFFFFFFL
 
     private fun ntpNow(): Long {
-        val us = System.currentTimeMillis() * 1000L
+        // Monotonic high-resolution clock anchored to wall time at connect:
+        // microsecond precision without wall-clock jumps.
+        val us = wallMs0 * 1000L + (android.os.SystemClock.elapsedRealtimeNanos() - elapsedNanos0) / 1000L
         val sec = us / 1_000_000L
         val frac = us % 1_000_000L
         return ((sec + 0x83AA7E80L) shl 32) or ((frac shl 32) / 1_000_000L)

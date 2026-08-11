@@ -43,7 +43,7 @@ class AudioCapture(
                 val rec = AudioRecord.Builder()
                     .setAudioPlaybackCaptureConfig(config)
                     .setAudioFormat(format)
-                    .setBufferSizeInBytes(maxOf(min * 4, 8192))
+                    .setBufferSizeInBytes(maxOf(min * 2, 4096))
                     .build()
                 rec.startRecording()
                 if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
@@ -63,7 +63,8 @@ class AudioCapture(
     }
 
     private fun loop(rec: AudioRecord) {
-        val buf = ShortArray(2048)
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+        val buf = ShortArray(1024)
         while (running) {
             val n = try {
                 rec.read(buf, 0, buf.size)

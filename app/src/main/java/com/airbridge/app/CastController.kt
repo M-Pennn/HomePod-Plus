@@ -6,6 +6,7 @@ import android.util.Log
 import com.airbridge.app.airplay.AirplayDevice
 import com.airbridge.app.airplay.MdnsDiscoverer
 import com.airbridge.app.airplay.RaopSender
+import com.airbridge.app.airplay.RaopSender.LatencyMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -19,6 +20,8 @@ object CastController {
         val connecting: Boolean = false,
         val streaming: Boolean = false,
         val testToneOn: Boolean = false,
+        val latencyMode: LatencyMode = LatencyMode.STABLE,
+        val robustMode: Boolean = false,
         val status: String = "未连接",
         val logs: List<String> = emptyList(),
         val volume: Float = 80f
@@ -32,6 +35,8 @@ object CastController {
 
     private const val PREFS = "airbridge_prefs"
     private const val KEY_MANUAL = "manual_devices"
+    private const val KEY_LATENCY = "latency_mode"
+    private const val KEY_ROBUST = "robust_mode"
 
     fun startDiscovery(context: Context) {
         if (discoverer != null) return
@@ -73,6 +78,10 @@ object CastController {
     fun loadManual(context: Context) {
         contextForPrefs = context.applicationContext
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val modeName = prefs.getString(KEY_LATENCY, LatencyMode.STABLE.name) ?: LatencyMode.STABLE.name
+        val mode = runCatching { LatencyMode.valueOf(modeName) }.getOrDefault(LatencyMode.STABLE)
+        val robust = prefs.getBoolean(KEY_ROBUST, false)
+        _state.update { it.copy(latencyMode = mode, robustMode = robust) }
         val raw = prefs.getString(KEY_MANUAL, "") ?: ""
         for (line in raw.split("\n")) {
             val parts = line.split("|")
@@ -99,6 +108,26 @@ object CastController {
             .edit()
             .putString(KEY_MANUAL, lines)
             .apply()
+    }
+
+    fun setLatencyMode(mode: LatencyMode) {
+        _state.update { it.copy(latencyMode = mode) }
+        sender?.latencyMode = mode
+        contextForPrefs?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putString(KEY_LATENCY, mode.name)
+            ?.apply()
+        addLog("延迟模式: ${mode.name}")
+    }
+
+    fun setRobustMode(on: Boolean) {
+        _state.update { it.copy(robustMode = on) }
+        sender?.robustMode = on
+        contextForPrefs?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putBoolean(KEY_ROBUST, on)
+            ?.apply()
+        addLog(if (on) "已开启网络稳健模式（冗余发包）" else "已关闭网络稳健模式")
     }
 
     fun setConnecting(device: AirplayDevice) {

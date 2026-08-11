@@ -8,10 +8,12 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.airbridge.app.airplay.AirplayDevice
 import com.airbridge.app.airplay.RaopSender
@@ -36,6 +38,8 @@ class CastService : Service() {
     private var capture: AudioCapture? = null
     private var sender: RaopSender? = null
     private var stopping = false
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     @Volatile
     private var testToneOn = false
     private var testToneThread: Thread? = null
@@ -115,6 +119,8 @@ class CastService : Service() {
             }
         )
         sender = s
+        s.latencyMode = CastController.state.value.latencyMode
+        s.robustMode = CastController.state.value.robustMode
         CastController.sender = s
         capture = AudioCapture(
             proj,
@@ -127,6 +133,7 @@ class CastService : Service() {
             stopSelf()
             return
         }
+        acquireNetworkLocks()
         s.start()
     }
 
@@ -143,6 +150,7 @@ class CastService : Service() {
     private fun cleanup() {
         stopTestTone()
         capture?.stop()
+        releaseNetworkLocks()
         capture = null
         try {
             projection?.stop()
@@ -150,6 +158,43 @@ class CastService : Service() {
         }
         projection = null
         sender = null
+    }
+
+    private fun acquireNetworkLocks() {
+        try {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AirBridge:cast").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            wifiLock = if (Build.VERSION.SDK_INT >= 29) {
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "AirBridge:cast")
+            } else {
+                @Suppress("DEPRECATION")
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AirBridge:cast")
+            }.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun releaseNetworkLocks() {
+        try {
+            wakeLock?.release()
+        } catch (_: Exception) {
+        }
+        wakeLock = null
+        try {
+            wifiLock?.release()
+        } catch (_: Exception) {
+        }
+        wifiLock = null
     }
 
     private fun startForegroundCompat() {

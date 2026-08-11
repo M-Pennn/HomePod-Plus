@@ -26,11 +26,13 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -47,6 +49,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.airbridge.app.airplay.AirplayDevice
+import com.airbridge.app.airplay.RaopSender.LatencyMode
 
 class MainActivity : ComponentActivity() {
 
@@ -140,6 +143,7 @@ private fun App(onConnect: (AirplayDevice) -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 StatusCard(ui)
+                SettingsCard(ui)
                 if (ui.streaming) {
                     VolumeCard(
                         ui = ui,
@@ -162,6 +166,51 @@ private fun App(onConnect: (AirplayDevice) -> Unit) {
                 showManual = false
             }
         )
+    }
+}
+
+@Composable
+private fun SettingsCard(ui: CastController.UiState) {
+    Card {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("延迟与网络", style = MaterialTheme.typography.titleMedium)
+            Text("延迟模式（下次连接生效）", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                LatencyMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = ui.latencyMode == mode,
+                        onClick = { CastController.setLatencyMode(mode) },
+                        label = {
+                            Text(
+                                when (mode) {
+                                    LatencyMode.STABLE -> "稳定"
+                                    LatencyMode.LOW -> "低延迟"
+                                    LatencyMode.ULTRA -> "极低延迟"
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("网络稳健模式", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Wi-Fi 信号不佳时冗余发包，降低爆音",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(
+                    checked = ui.robustMode,
+                    onCheckedChange = { CastController.setRobustMode(it) }
+                )
+            }
+        }
     }
 }
 
