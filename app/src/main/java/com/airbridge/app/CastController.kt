@@ -24,7 +24,7 @@ object CastController {
         val robustMode: Boolean = false,
         val status: String = "未连接",
         val logs: List<String> = emptyList(),
-        val volume: Float = 80f
+        val volume: Float = 25f
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -131,7 +131,14 @@ object CastController {
     }
 
     fun setConnecting(device: AirplayDevice) {
-        _state.update { it.copy(connecting = true, streaming = false, status = "正在连接 ${device.name}...") }
+        _state.update {
+            it.copy(
+                connecting = true,
+                streaming = false,
+                status = "正在连接 ${device.name}...",
+                volume = 25f
+            )
+        }
     }
 
     fun setStreaming(s: RaopSender) {
@@ -174,7 +181,10 @@ object CastController {
     }
 
     fun stop(context: Context) {
-        context.stopService(Intent(context, CastService::class.java))
+        // Must deliver ACTION_STOP so the service runs its cleanup path.
+        context.startService(
+            Intent(context, CastService::class.java).setAction(CastService.ACTION_STOP)
+        )
     }
 
     fun toggleTestTone(context: Context) {

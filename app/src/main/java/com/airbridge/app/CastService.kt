@@ -58,6 +58,11 @@ class CastService : Service() {
         return START_NOT_STICKY
     }
 
+    override fun onDestroy() {
+        cleanup()
+        super.onDestroy()
+    }
+
     private fun startCasting(intent: Intent) {
         if (stopping) return
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)

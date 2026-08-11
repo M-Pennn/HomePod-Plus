@@ -147,6 +147,11 @@ class RaopSender(
         stop()
         wasUserStop = false
         latencyFrames = latencyMode.frames
+        synchronized(volumeLock) {
+            pendingVolumeDb = -1000.0
+            volumeDirty = false
+            lastVolumeSentAt = 0L
+        }
         running = true
         setState(State.CONNECTING)
         sessionThread = Thread({ runSession() }, "raop-session").also { it.start() }
@@ -171,7 +176,7 @@ class RaopSender(
 
     fun setVolume(pct: Double) {
         val p = pct.coerceIn(0.0, 100.0)
-        val dbfs = if (p < 0.01) -144.0 else -30.0 + 0.3 * p
+        val dbfs = pctToDbfs(p)
         synchronized(volumeLock) {
             pendingVolumeDb = dbfs
             volumeDirty = true
@@ -609,7 +614,8 @@ class RaopSender(
         firstAudio = true
         sendSyncPacket(true)
         synchronized(volumeLock) {
-            if (pendingVolumeDb <= -999.0) pendingVolumeDb = 0.0
+            // Default to 25% on a fresh connection so users are not startled.
+            if (pendingVolumeDb <= -999.0) pendingVolumeDb = pctToDbfs(25.0)
             volumeDirty = true
         }
         flushVolume()
@@ -654,6 +660,9 @@ class RaopSender(
             }
         }
     }
+
+    private fun pctToDbfs(pct: Double): Double =
+        if (pct < 0.01) -144.0 else -30.0 + 0.3 * pct
 
     // ------------------------------------------------------------------
     // Control channel
