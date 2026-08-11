@@ -11,6 +11,8 @@
 - 事件通道保活、断线重连、重传请求、NTP timing 应答
 - 任意 App 音频捕获（MediaProjection + AudioPlaybackCapture）
 - 音量控制（自动节流，避免高频请求导致 HomePod 断开）
+- 延迟模式可选：稳定（约 1.5s）/ 低延迟（约 250ms）/ 极低延迟（约 100ms）
+- 网络稳健模式：冗余发包 + Wi-Fi/CPU 休眠锁，弱 Wi-Fi 下降低爆音
 - 测试音（440Hz，快速验证链路）
 - 前台服务 + 通知栏停止按钮
 
