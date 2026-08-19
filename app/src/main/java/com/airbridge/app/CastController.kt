@@ -1,5 +1,6 @@
 package com.airbridge.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.util.Log
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
 /** App-wide state shared between the UI and the casting service. */
+@SuppressLint("StaticFieldLeak") // stores only applicationContext
 object CastController {
 
     data class UiState(
@@ -22,6 +24,7 @@ object CastController {
         val testToneOn: Boolean = false,
         val latencyMode: LatencyMode = LatencyMode.STABLE,
         val robustMode: Boolean = false,
+        val alacOn: Boolean = true,
         val status: String = "未连接",
         val logs: List<String> = emptyList(),
         val volume: Float = 25f
@@ -31,12 +34,15 @@ object CastController {
     val state: StateFlow<UiState> = _state
 
     private var discoverer: MdnsDiscoverer? = null
+    private val logExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     var sender: RaopSender? = null
 
     private const val PREFS = "airbridge_prefs"
     private const val KEY_MANUAL = "manual_devices"
     private const val KEY_LATENCY = "latency_mode"
     private const val KEY_ROBUST = "robust_mode"
+    private const val KEY_ALAC = "alac_on"
+    private const val KEY_VOLUME = "volume"
 
     fun startDiscovery(context: Context) {
         if (discoverer != null) return
@@ -73,6 +79,16 @@ object CastController {
         saveManual(contextForPrefs ?: return)
     }
 
+    fun removeManual(device: AirplayDevice) {
+        _state.update {
+            it.copy(
+                devices = it.devices.filterNot { d -> d.host == device.host && d.port == device.port },
+                logs = it.logs + "已删除 ${device.name} (${device.host}:${device.port})"
+            )
+        }
+        saveManual(contextForPrefs ?: return)
+    }
+
     private var contextForPrefs: Context? = null
 
     fun loadManual(context: Context) {
@@ -81,7 +97,9 @@ object CastController {
         val modeName = prefs.getString(KEY_LATENCY, LatencyMode.STABLE.name) ?: LatencyMode.STABLE.name
         val mode = runCatching { LatencyMode.valueOf(modeName) }.getOrDefault(LatencyMode.STABLE)
         val robust = prefs.getBoolean(KEY_ROBUST, false)
-        _state.update { it.copy(latencyMode = mode, robustMode = robust) }
+        val alacOn = prefs.getBoolean(KEY_ALAC, true)
+        val volume = prefs.getFloat(KEY_VOLUME, 25f).coerceIn(0f, 100f)
+        _state.update { it.copy(latencyMode = mode, robustMode = robust, alacOn = alacOn, volume = volume) }
         val raw = prefs.getString(KEY_MANUAL, "") ?: ""
         for (line in raw.split("\n")) {
             val parts = line.split("|")
@@ -130,24 +148,38 @@ object CastController {
         addLog(if (on) "已开启网络稳健模式（冗余发包）" else "已关闭网络稳健模式")
     }
 
+    fun setAlac(on: Boolean) {
+        _state.update { it.copy(alacOn = on) }
+        sender?.alacOn = on
+        contextForPrefs?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putBoolean(KEY_ALAC, on)
+            ?.apply()
+        addLog(if (on) "已开启压缩 ALAC（减小音频包）" else "已关闭压缩 ALAC（使用未压缩帧）")
+    }
+
     fun setConnecting(device: AirplayDevice) {
         _state.update {
             it.copy(
                 connecting = true,
                 streaming = false,
                 status = "正在连接 ${device.name}...",
-                volume = 25f
+                volume = _state.value.volume
             )
         }
     }
 
     fun setStreaming(s: RaopSender) {
         sender = s
-        _state.update { it.copy(connecting = false, streaming = true, status = "正在投射") }
+        _state.update { it.copy(connecting = false, streaming = true, status = "正在投射 ${s.deviceName}") }
     }
 
     fun setTestTone(on: Boolean) {
         _state.update { it.copy(testToneOn = on) }
+    }
+
+    fun setStatus(text: String) {
+        _state.update { it.copy(status = text) }
     }
 
     fun resetConnection(reason: String?) {
@@ -164,20 +196,32 @@ object CastController {
 
     fun addLog(line: String) {
         Log.d("AirBridge", line)
-        try {
-            val ctx = contextForPrefs
-            if (ctx != null) {
-                val f = java.io.File(ctx.filesDir, "airbridge.log")
-                f.appendText("${System.currentTimeMillis()} $line\n")
+        val ctx = contextForPrefs
+        if (ctx != null) {
+            logExecutor.execute {
+                try {
+                    val f = java.io.File(ctx.filesDir, "airbridge.log")
+                    if (f.length() > 256L * 1024) f.delete()
+                    f.appendText("${System.currentTimeMillis()} $line\n")
+                } catch (_: Exception) {
+                }
             }
-        } catch (_: Exception) {
         }
         _state.update { it.copy(logs = (it.logs + line).takeLast(300)) }
     }
 
+    fun clearLogs() {
+        _state.update { it.copy(logs = emptyList()) }
+    }
+
     fun setVolume(pct: Float) {
-        _state.update { it.copy(volume = pct.coerceIn(0f, 100f)) }
-        sender?.setVolume(pct.toDouble())
+        val v = pct.coerceIn(0f, 100f)
+        _state.update { it.copy(volume = v) }
+        contextForPrefs?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putFloat(KEY_VOLUME, v)
+            ?.apply()
+        sender?.setVolume(v.toDouble())
     }
 
     fun stop(context: Context) {

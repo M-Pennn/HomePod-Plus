@@ -6,6 +6,7 @@ class PcmRingBuffer(val capacityFrames: Int) {
     private var readPos = 0
     private var writePos = 0
     private var count = 0
+    private var overflowFrames = 0L
 
     @Synchronized
     fun write(samples: ShortArray) {
@@ -23,6 +24,7 @@ class PcmRingBuffer(val capacityFrames: Int) {
             if (count < capacityFrames) {
                 count++
             } else {
+                overflowFrames++
                 readPos = (readPos + 2) % buf.size
             }
         }
@@ -38,5 +40,23 @@ class PcmRingBuffer(val capacityFrames: Int) {
         }
         count -= n
         return n
+    }
+
+    @Synchronized
+    fun availableFrames(): Int = count
+
+    @Synchronized
+    fun clear() {
+        readPos = 0
+        writePos = 0
+        count = 0
+        overflowFrames = 0
+    }
+
+    @Synchronized
+    fun drainOverflowFrames(): Long {
+        val v = overflowFrames
+        overflowFrames = 0
+        return v
     }
 }

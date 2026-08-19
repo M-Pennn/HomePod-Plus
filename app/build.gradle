@@ -12,14 +12,33 @@ android {
         applicationId "com.airbridge.app"
         minSdk 29
         targetSdk 36
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 14
+        versionName "0.1.14"
     }
 
+    def keystorePropsFile = rootProject.file("keystore.properties")
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                def props = new Properties()
+                keystorePropsFile.withInputStream { props.load(it) }
+                storeFile rootProject.file(props["storeFile"])
+                storePassword props["storePassword"]
+                keyAlias props["keyAlias"]
+                keyPassword props["keyPassword"]
+            }
+        }
+    }
     buildTypes {
         release {
-            minifyEnabled false
-            signingConfig signingConfigs.debug
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
         }
     }
 
@@ -33,6 +52,7 @@ android {
 
     buildFeatures {
         compose true
+        buildConfig true
     }
 
     packagingOptions {
@@ -51,4 +71,6 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.16.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.9.0'
     implementation 'org.bouncycastle:bcprov-jdk18on:1.79'
+
+    testImplementation 'junit:junit:4.13.2'
 }

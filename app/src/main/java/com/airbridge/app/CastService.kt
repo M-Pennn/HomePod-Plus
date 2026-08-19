@@ -38,6 +38,7 @@ class CastService : Service() {
     private var capture: AudioCapture? = null
     private var sender: RaopSender? = null
     private var stopping = false
+    private var sessionGeneration = 0
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     @Volatile
@@ -65,6 +66,7 @@ class CastService : Service() {
 
     private fun startCasting(intent: Intent) {
         if (stopping) return
+        stopping = false
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         @Suppress("DEPRECATION")
         val data = if (Build.VERSION.SDK_INT >= 33) {
@@ -104,19 +106,32 @@ class CastService : Service() {
             Handler(Looper.getMainLooper())
         )
 
+        val gen = ++sessionGeneration
         val s = RaopSender(
             device,
             object : RaopSender.Listener {
-                override fun onState(state: RaopSender.State) = Unit
+                override fun onState(state: RaopSender.State) {
+                    if (gen != sessionGeneration) return
+                    when (state) {
+                        RaopSender.State.PAIRING -> CastController.setStatus("正在配对...")
+                        RaopSender.State.HANDSHAKE -> CastController.setStatus("正在建立会话...")
+                        else -> Unit
+                    }
+                }
 
                 override fun onLog(message: String) = CastController.addLog(message)
 
                 override fun onStarted() {
+                    if (gen != sessionGeneration) return
                     val snd = this@CastService.sender
-                    if (snd != null) CastController.setStreaming(snd)
+                    if (snd != null) {
+                        CastController.setStreaming(snd)
+                        snd.setVolume(CastController.state.value.volume.toDouble())
+                    }
                 }
 
                 override fun onStopped(reason: String?) {
+                    if (gen != sessionGeneration) return
                     CastController.resetConnection(reason)
                     cleanup()
                     stopSelf()
@@ -126,12 +141,17 @@ class CastService : Service() {
         sender = s
         s.latencyMode = CastController.state.value.latencyMode
         s.robustMode = CastController.state.value.robustMode
+        s.alacOn = CastController.state.value.alacOn
         CastController.sender = s
         capture = AudioCapture(
             proj,
-            { samples, rate -> s.pushPcm(samples, rate) },
+            { samples, rate ->
+                if (!testToneOn) s.pushPcm(samples, rate)
+            },
+            { msg -> CastController.addLog(msg) },
             { msg -> CastController.addLog(msg) }
         )
+        capture!!.onRate = { rate -> s.onCaptureRate(rate) }
         if (!capture!!.start()) {
             CastController.addLog("无法捕获系统音频（请检查是否允许投射屏幕/音频）")
             cleanup()
@@ -147,13 +167,14 @@ class CastService : Service() {
         stopping = true
         CastController.addLog("正在停止投射...")
         stopTestTone()
-        sender?.stop()
         cleanup()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private fun cleanup() {
         stopTestTone()
+        sender?.stop()
+        sender = null
         capture?.stop()
         releaseNetworkLocks()
         capture = null
@@ -162,7 +183,6 @@ class CastService : Service() {
         } catch (_: Exception) {
         }
         projection = null
-        sender = null
     }
 
     private fun acquireNetworkLocks() {
@@ -170,20 +190,23 @@ class CastService : Service() {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AirBridge:cast").apply {
                 setReferenceCounted(false)
-                acquire()
+                acquire(6L * 60 * 60 * 1000)
             }
         } catch (_: Exception) {
         }
         try {
             val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-            wifiLock = if (Build.VERSION.SDK_INT >= 29) {
-                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "AirBridge:cast")
-            } else {
-                @Suppress("DEPRECATION")
-                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AirBridge:cast")
-            }.apply {
-                setReferenceCounted(false)
-                acquire()
+            try {
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "AirBridge:cast").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (_: Exception) {
+                // 部分机型不支持低延迟锁，退回高性能锁
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AirBridge:cast").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
             }
         } catch (_: Exception) {
         }
@@ -217,10 +240,18 @@ class CastService : Service() {
             stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        val openIntent = Intent(this, MainActivity::class.java)
+        val openPi = PendingIntent.getActivity(
+            this,
+            0,
+            openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.ic_stat_airplay)
             .setContentTitle(getString(R.string.notif_title))
             .setContentText("点击停止可结束投射")
+            .setContentIntent(openPi)
             .setOngoing(true)
             .addAction(0, "停止", stopPi)
             .build()
@@ -256,6 +287,7 @@ class CastService : Service() {
         val rate = 44100
         val freq = 440.0
         val buf = ShortArray(2048)
+        val sleepMs = (buf.size / 2) * 1000L / rate
         var phase = 0.0
         while (testToneOn) {
             var i = 0
@@ -269,7 +301,7 @@ class CastService : Service() {
             }
             sender?.pushPcm(buf, rate)
             try {
-                Thread.sleep(20)
+                Thread.sleep(sleepMs)
             } catch (e: InterruptedException) {
                 break
             }

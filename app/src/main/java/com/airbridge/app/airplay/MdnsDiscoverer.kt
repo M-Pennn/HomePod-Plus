@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.DatagramPacket
@@ -46,6 +47,8 @@ class MdnsDiscoverer(
 
     private val pending = LinkedHashMap<String, Pending>()
     private val devices = LinkedHashMap<String, AirplayDevice>()
+    private val rawKeys = HashSet<String>()
+    private val lastSeen = HashMap<String, Long>()
     private val queryTypes = listOf("_airplay._tcp.local", "_raop._tcp.local")
 
     private class Pending {
@@ -98,7 +101,15 @@ class MdnsDiscoverer(
                         handleNsdFound(serviceInfo)
                     }
 
-                    override fun onServiceLost(serviceInfo: NsdServiceInfo) = Unit
+                    override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                        val before = devices.size
+                        devices.entries.removeAll { e ->
+                            e.value.name == serviceInfo.serviceName && e.value.type == serviceInfo.serviceType
+                        }
+                        if (devices.size != before) {
+                            listener(devices.values.toList())
+                        }
+                    }
 
                     override fun onDiscoveryStopped(serviceType: String) = Unit
 
@@ -139,7 +150,15 @@ class MdnsDiscoverer(
                     }
 
                     override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                        val host = serviceInfo.host?.hostAddress ?: return
+                        val host = if (Build.VERSION.SDK_INT >= 34) {
+                            serviceInfo.hostAddresses
+                                ?.firstOrNull { it is Inet4Address }
+                                ?.hostAddress
+                                ?: serviceInfo.hostAddresses?.firstOrNull()?.hostAddress
+                        } else {
+                            @Suppress("DEPRECATION")
+                            serviceInfo.host?.hostAddress
+                        } ?: return
                         if (host.isBlank()) return
                         val attrs = serviceInfo.attributes
                         val txt = HashMap<String, String>()
@@ -190,8 +209,9 @@ class MdnsDiscoverer(
         var off = start
         var jumped = false
         var end = start
+        var jumps = 0
         while (true) {
-            if (off >= data.size) break
+            if (off >= data.size || labels.size > 32) break
             val len = data[off].toInt() and 0xFF
             if (len == 0) {
                 off++
@@ -200,6 +220,8 @@ class MdnsDiscoverer(
             }
             if (len and 0xC0 == 0xC0) {
                 if (off + 1 >= data.size) break
+                jumps++
+                if (jumps > 8) break
                 val ptr = ((len and 0x3F) shl 8) or (data[off + 1].toInt() and 0xFF)
                 if (!jumped) end = off + 2
                 jumped = true
@@ -323,6 +345,7 @@ class MdnsDiscoverer(
         val group = InetAddress.getByName("224.0.0.251")
         val buf = ByteArray(65536)
         var lastQuery = 0L
+        var loopCount = 0
         while (running) {
             val now = System.currentTimeMillis()
             if (now - lastQuery > 2000) {
@@ -336,6 +359,18 @@ class MdnsDiscoverer(
                     }
                 }
                 lastQuery = now
+            }
+            loopCount++
+            if (loopCount % 8 == 0) {
+                val stale = rawKeys.filter { (lastSeen[it] ?: 0L) < now - 30_000 }
+                for (k in stale) {
+                    devices.remove(k)
+                    rawKeys.remove(k)
+                    lastSeen.remove(k)
+                }
+                if (stale.isNotEmpty()) {
+                    listener(devices.values.toList())
+                }
             }
             try {
                 val p = DatagramPacket(buf, buf.size)
@@ -412,7 +447,7 @@ class MdnsDiscoverer(
                     val a = addrs.nextElement()
                     if (a is Inet4Address) {
                         val ip = a.hostAddress ?: continue
-                        if (ip.startsWith("192.168.") || ip.startsWith("10.")) return n
+                        if (a.isSiteLocalAddress) return n
                     }
                 }
             }
@@ -493,7 +528,10 @@ class MdnsDiscoverer(
             txt = p.txt.toMap(),
             type = type
         )
+        val changed = devices[key] != dev
         devices[key] = dev
-        listener(devices.values.toList())
+        lastSeen[key] = System.currentTimeMillis()
+        rawKeys.add(key)
+        if (changed) listener(devices.values.toList())
     }
 }

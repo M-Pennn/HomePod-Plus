@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -37,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.airbridge.app.airplay.AirplayDevice
@@ -150,10 +154,11 @@ private fun App(onConnect: (AirplayDevice) -> Unit) {
                         onVolume = { CastController.setVolume(it) },
                         onStop = { CastController.stop(context) }
                     )
+                    LogPanel(ui.logs, modifier = Modifier.weight(1f))
                 } else {
-                    DeviceList(ui, onConnect, Modifier.weight(1f))
+                    DeviceList(ui, onConnect, onDelete = { CastController.removeManual(it) }, modifier = Modifier.weight(1f))
+                    LogPanel(ui.logs, modifier = Modifier.height(140.dp))
                 }
-                LogPanel(ui.logs)
             }
         }
     }
@@ -180,7 +185,10 @@ private fun SettingsCard(ui: CastController.UiState) {
         ) {
             Text("延迟与网络", style = MaterialTheme.typography.titleMedium)
             Text("延迟模式（下次连接生效）", style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
+            ) {
                 LatencyMode.entries.forEach { mode ->
                     FilterChip(
                         selected = ui.latencyMode == mode,
@@ -191,12 +199,19 @@ private fun SettingsCard(ui: CastController.UiState) {
                                     LatencyMode.STABLE -> "稳定"
                                     LatencyMode.LOW -> "低延迟"
                                     LatencyMode.ULTRA -> "极低延迟"
-                                }
+                                    LatencyMode.SAFE -> "网络稳定"
+                                },
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     )
                 }
             }
+            Text(
+                "网络稳定≈2s · 稳定≈1.5s · 低延迟≈0.25s · 极低延迟≈0.1s（弱网推荐网络稳定）",
+                style = MaterialTheme.typography.bodySmall
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("网络稳健模式", style = MaterialTheme.typography.bodyMedium)
@@ -208,6 +223,19 @@ private fun SettingsCard(ui: CastController.UiState) {
                 Switch(
                     checked = ui.robustMode,
                     onCheckedChange = { CastController.setRobustMode(it) }
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("压缩 ALAC", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "减小每个音频包，弱网更稳；出现异常时请关闭",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(
+                    checked = ui.alacOn,
+                    onCheckedChange = { CastController.setAlac(it) }
                 )
             }
         }
@@ -239,7 +267,8 @@ private fun StatusCard(ui: CastController.UiState) {
 private fun DeviceList(
     ui: CastController.UiState,
     onConnect: (AirplayDevice) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDelete: (AirplayDevice) -> Unit = {}
 ) {
     if (ui.devices.isEmpty()) {
         Text(
@@ -266,6 +295,11 @@ private fun DeviceList(
                     }
                     Button(onClick = { onConnect(d) }, enabled = !ui.connecting) {
                         Text("连接")
+                    }
+                    if (d.txt.isEmpty()) {
+                        TextButton(onClick = { onDelete(d) }) {
+                            Text("删除")
+                        }
                     }
                 }
             }
@@ -310,18 +344,38 @@ private fun VolumeCard(ui: CastController.UiState, onVolume: (Float) -> Unit, on
 }
 
 @Composable
-private fun LogPanel(logs: List<String>) {
-    Card {
-        Text(
-            text = logs.takeLast(40).joinToString("\n").ifEmpty { "日志区" },
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
+private fun LogPanel(logs: List<String>, modifier: Modifier = Modifier) {
+    val scrollState = rememberScrollState()
+    LaunchedEffect(logs) {
+        scrollState.scrollTo(scrollState.maxValue)
+    }
+    Card(modifier = modifier) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(12.dp)
-        )
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("日志", style = MaterialTheme.typography.labelMedium)
+                TextButton(onClick = { CastController.clearLogs() }) {
+                    Text("清空")
+                }
+            }
+            Text(
+                text = logs.takeLast(40).joinToString("\n").ifEmpty { "日志区" },
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(scrollState)
+                    .padding(bottom = 6.dp)
+            )
+        }
     }
 }
 
@@ -348,13 +402,15 @@ private fun ManualDialog(
                     value = ip,
                     onValueChange = { ip = it },
                     label = { Text("IP 地址") },
-                    singleLine = true
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
                 )
                 OutlinedTextField(
                     value = port,
                     onValueChange = { port = it },
                     label = { Text("端口") },
-                    singleLine = true
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
             }
         },
@@ -364,7 +420,7 @@ private fun ManualDialog(
                     val p = port.toIntOrNull() ?: 7000
                     if (ip.isNotBlank()) onAdd(name.ifBlank { ip }, ip.trim(), p)
                 },
-                enabled = ip.isNotBlank()
+                enabled = ip.isNotBlank() && (port.toIntOrNull()?.let { it in 1..65535 } ?: false)
             ) {
                 Text("添加")
             }
