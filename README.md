@@ -26,12 +26,15 @@ AirBridge 是一款运行在 Android 手机上的 **AirPlay 2 音频发送端**�
 
 - 🔍 **局域网自动发现**：NsdManager + 原生 mDNS 双通道扫描 AirPlay 设备
 - 📶 **手动添加**：自动发现不到时，直接输入设备 IP 和端口
-- ⚡ **AirPlay 2 实时推流**：44.1kHz / 16bit / 立体声，未压缩 ALAC 帧 + NTP 时钟同步
-- 🎚️ **三档延迟模式**：
-  - 稳定（约 1.5s）：最稳，弱网也不易断
+- ⚡ **AirPlay 2 实时推流**：44.1kHz / 16bit / 立体声，压缩 ALAC（自适应 LPC，逐包自校验）+ NTP 时钟同步
+- 🎚️ **四档延迟模式**（按延迟从高到低）：
+  - 网络稳定（约 2s）：弱网专用，配合延时冗余最不易断
+  - 稳定（约 1.5s）：日常推荐
   - 低延迟（约 250ms）：日常听歌，基本无感
   - 极低延迟（约 100ms）：看视频对嘴型，Wi-Fi 好时很爽
-- 🛡️ **网络稳健模式**：冗余发包 + Wi-Fi/CPU 休眠锁，HomePod 离路由器远也不易爆音
+- 🛡️ **网络稳健模式**：延时冗余发包 + Wi-Fi/CPU 休眠锁，HomePod 离路由器远也不易爆音
+- 🔧 **弱网引擎**：发送线程去阻塞、硬件时钟锁定节奏、0x55 丢包重传（去重/限速）、丢包风暴自动熔断
+- 🎚️ **压缩 ALAC 开关**：默认开启，可在设置中关闭以排查兼容性
 - 🔇 **音量控制**：自动节流，拖动不卡顿、不踢断连接
 - 🎵 **440Hz 测试音**：一键验证整条链路
 - 🔔 **前台服务**：通知栏常驻，一键停止
@@ -44,7 +47,7 @@ AirBridge 是一款运行在 Android 手机上的 **AirPlay 2 音频发送端**�
 从 [Releases](../../releases) 页面下载最新的 APK，或者用 adb 安装：
 
 ```bash
-adb install -r AirBridge-v0.1.0.apk
+adb install -r AirBridge-v1.0.0.apk
 ```
 
 ### 2. 连接
@@ -59,6 +62,7 @@ adb install -r AirBridge-v0.1.0.apk
 
 - **延迟模式**：打开 App 主界面的“延迟与网络”卡片，选择想要的模式（下次连接生效）
 - **网络稳健模式**：HomePod 离路由器较远、出现爆音时开启
+- **压缩 ALAC**：默认开启，出现异常时关闭后重连
 - **测试音**：投射期间点“播放测试音 (440Hz)”快速验证链路
 
 ## 工作原理
@@ -69,7 +73,7 @@ AirBridge 完整实现了 AirPlay 2 发送端协议（参考 clean-room 开源�
 2. **配对**：HomePod 瞬时配对（SRP-6a 3072bit / SHA-512，固定 PIN 3939，M1-M4）
 3. **加密控制通道**：所有 RTSP 请求用 ChaCha20-Poly1305 帧封装（`[2 字节 LE 长度][密文][16 字节 tag]`）
 4. **会话建立**：`GET /info` → `SETUP session`（含 timingPort）→ 事件通道 → `RECORD` → `SETUP stream`
-5. **音频推流**：RTP/UDP，352 样本/包，未压缩 ALAC 帧，NTP 时钟同步，支持丢包重传
+5. **音频推流**：RTP/UDP，352 样本/包，压缩 ALAC 帧（不划算时自动回退未压缩），NTP 时钟同步，0x55 丢包重传 + 延时冗余
 6. **保活**：事件通道 200 OK 应答 + 每 2 秒 `POST /feedback`
 
 > 调试中我们踩过并修复了三个大坑：HomePod 会在 SETUP 阶段探测发送端 UDP 端口（不响应会等 30 秒后报 500）；瞬时配对必须派生事件通道密钥（否则 2 秒被踢）；音量请求不能在主线程发且必须节流（否则连接被刷断）。这些经验都已固化在代码里。
@@ -113,8 +117,11 @@ AirBridge 是“发送端”，HomePod 上的 Siri 和家庭 App 控制面板可
 ## 路线图
 
 - [x] AirPlay 2 实时音频推流（HomePod 验证通过）
-- [x] 三档延迟模式
-- [x] 网络稳健模式（冗余发包 + 休眠锁）
+- [x] 四档延迟模式（含弱网专用“网络稳定”）
+- [x] 网络稳健模式（延时冗余 + 休眠锁）
+- [x] 压缩 ALAC 编码（自适应 LPC + 逐包自校验）
+- [x] 弱网自适应：发送去阻塞 / 重传限速 / 风暴熔断
+- [x] 单元测试与 GitHub Actions CI
 - [ ] Windows 版（C#/.NET，系统音频投射）
 - [ ] Apple TV PIN 配对
 - [ ] 设备记忆与自动连接
@@ -128,9 +135,12 @@ AirBridge 是“发送端”，HomePod 上的 Siri 和家庭 App 控制面板可
   - [airplay2-sender-cpp](https://github.com/akustikrausch/airplay2-sender-cpp)（Apache-2.0）
   - [pair_ap](https://github.com/ejurgensen/pair_ap)（MIT）
   - [owntone-server](https://github.com/owntone/owntone-server)（协议行为参考）
+  - [FFmpeg](https://github.com/FFmpeg/FFmpeg)（alacenc / alac / lpc，LGPL-2.1+，AlacCodec.kt 的位流与 LPC 算法参考）
 
 ## 许可证
 
 本项目以 [Apache License 2.0](LICENSE) 开源。
+
+> 许可说明：`AlacCodec.kt` 的 ALAC 位流与 LPC 算法参考 FFmpeg 的 LGPL-2.1+ 实现移植，该文件按 LGPL-2.1+ 条款分发；其余代码按 Apache-2.0 分发。
 
 > 免责声明：本项目与 Apple Inc. 无关，AirPlay、HomePod、Apple TV 均为 Apple Inc. 的商标，此处仅用于描述兼容性。

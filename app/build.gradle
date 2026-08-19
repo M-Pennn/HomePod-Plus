@@ -12,8 +12,8 @@ android {
         applicationId "com.airbridge.app"
         minSdk 29
         targetSdk 36
-        versionCode 14
-        versionName "0.1.14"
+        versionCode 15
+        versionName "1.0.0"
     }
 
     def keystorePropsFile = rootProject.file("keystore.properties")
