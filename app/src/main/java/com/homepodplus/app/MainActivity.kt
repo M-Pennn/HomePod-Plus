@@ -16,6 +16,10 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -298,10 +302,6 @@ private fun AppScaffold(
     onClearLogs: () -> Unit = {}
 ) {
     val hazeState = remember { HazeState() }
-    var configModified by remember { mutableStateOf(false) }
-    var latestConfig by remember { mutableStateOf(ui.dualConfig) }
-    var showUnsavedDialog by remember { mutableStateOf(false) }
-    var pendingTargetTab by remember { mutableIntStateOf(0) }
 
     MaterialTheme(colorScheme = BaseTheme.ColorScheme) {
         Box(
@@ -327,20 +327,13 @@ private fun AppScaffold(
                 } else {
                     ConfigScreen(
                         ui = ui,
-                        onSaveConfig = {
-                            configModified = false
-                            onSaveConfig(it)
-                        },
+                        onSaveConfig = onSaveConfig,
                         onConnectSingle = onConnectSingle,
                         onRescan = onRescan,
                         onToggleTone = onToggleTone,
                         onDeleteManual = onDeleteManual,
                         onAddManual = onAddManual,
-                        onClearLogs = onClearLogs,
-                        onConfigModifiedState = { modified, cfg ->
-                            configModified = modified
-                            latestConfig = cfg
-                        }
+                        onClearLogs = onClearLogs
                     )
                 }
             }
@@ -348,53 +341,13 @@ private fun AppScaffold(
             // 悬浮圆角磨砂胶囊底栏 (.tabbar-floating)
             FloatingTabBar(
                 currentTab = currentTab,
-                onTabSelect = { newTab ->
-                    if (currentTab == 1 && newTab == 0 && configModified) {
-                        pendingTargetTab = newTab
-                        showUnsavedDialog = true
-                    } else {
-                        onTabSelect(newTab)
-                    }
-                },
+                onTabSelect = onTabSelect,
                 hazeState = hazeState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(horizontal = 24.dp, vertical = 16.dp)
             )
-
-            // 离开配置页未保存拦截弹窗
-            if (showUnsavedDialog) {
-                AlertDialog(
-                    onDismissRequest = { showUnsavedDialog = false },
-                    title = { Text("未保存的配置更改", fontWeight = FontWeight.Bold, color = BaseTheme.TextPrimary) },
-                    text = { Text("您在配置页面有修改尚未保存。离开前是否保存？保存后新配置将立即生效。", color = BaseTheme.TextSecondary) },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                onSaveConfig(latestConfig)
-                                configModified = false
-                                showUnsavedDialog = false
-                                onTabSelect(pendingTargetTab)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = BaseTheme.Primary)
-                        ) {
-                            Text("保存并切换", color = Color.White)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = {
-                                configModified = false
-                                showUnsavedDialog = false
-                                onTabSelect(pendingTargetTab)
-                            }
-                        ) {
-                            Text("放弃修改", color = BaseTheme.TextSecondary)
-                        }
-                    }
-                )
-            }
         }
     }
 }
@@ -581,8 +534,7 @@ private fun ConfigScreen(
     onToggleTone: () -> Unit,
     onDeleteManual: (AirplayDevice) -> Unit,
     onAddManual: (AirplayDevice) -> Unit,
-    onClearLogs: () -> Unit,
-    onConfigModifiedState: (Boolean, DualConfig) -> Unit = { _, _ -> }
+    onClearLogs: () -> Unit
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -623,46 +575,16 @@ private fun ConfigScreen(
 
     val isModified = currentEditedConfig != ui.dualConfig
 
-    LaunchedEffect(isModified, currentEditedConfig) {
-        onConfigModifiedState(isModified, currentEditedConfig)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(start = 20.dp, end = 20.dp, top = 44.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
-        // 未保存配置修改提示条
-        AnimatedVisibility(visible = isModified) {
-            Card(
-                shape = BaseTheme.RadiusMd,
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CD)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        painter = painterResource(android.R.drawable.ic_dialog_info),
-                        contentDescription = "未保存提示",
-                        tint = Color(0xFF856404),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        text = "配置已修改，请点击页面底部「保存设置」使其生效。",
-                        color = Color(0xFF856404),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        }
-        // 模块 1：双音箱硬件配置 (.list-group)
-        SectionHeader("双 HomePod 设备配置")
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(start = 20.dp, end = 20.dp, top = 44.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            // 模块 1：双音箱硬件配置 (.list-group)
+            SectionHeader("双 HomePod 设备配置")
         Card(
             shape = BaseTheme.RadiusLg,
             colors = CardDefaults.cardColors(containerColor = BaseTheme.SurfaceSecondary),
@@ -1204,6 +1126,43 @@ private fun ConfigScreen(
 
         Spacer(modifier = Modifier.height(100.dp))
     }
+
+    // 悬浮在屏幕顶部的未保存提示胶囊（不挤占页面布局、独立浮动、带阴影）
+    AnimatedVisibility(
+        visible = isModified,
+        enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+        exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .padding(horizontal = 20.dp, vertical = 10.dp)
+    ) {
+        Card(
+            shape = BaseTheme.RadiusPill,
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3CD)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    painter = painterResource(android.R.drawable.ic_dialog_info),
+                    contentDescription = "未保存提示",
+                    tint = Color(0xFF856404),
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "配置已修改，请点击页面底部「保存设置」使其生效",
+                    color = Color(0xFF856404),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+    }
+}
 
     if (showAddDialog) {
         ManualDialog(
