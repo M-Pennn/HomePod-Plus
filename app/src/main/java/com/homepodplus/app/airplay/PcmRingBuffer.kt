@@ -1,4 +1,4 @@
-package com.airbridge.app.airplay
+﻿package com.homepodplus.app.airplay
 
 /** Simple synchronized short-ring buffer for interleaved stereo PCM. */
 class PcmRingBuffer(val capacityFrames: Int) {

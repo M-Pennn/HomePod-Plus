@@ -1,10 +1,10 @@
-package com.airbridge.app.airplay
+﻿package com.homepodplus.app.airplay
 
-import com.airbridge.app.airplay.AirplayCrypto.chacha20Poly1305Decrypt
-import com.airbridge.app.airplay.AirplayCrypto.chacha20Poly1305Encrypt
-import com.airbridge.app.airplay.AirplayCrypto.counterNonce8
-import com.airbridge.app.airplay.AirplayCrypto.hkdfSha512
-import com.airbridge.app.audio.AudioMasterClock
+import com.homepodplus.app.airplay.AirplayCrypto.chacha20Poly1305Decrypt
+import com.homepodplus.app.airplay.AirplayCrypto.chacha20Poly1305Encrypt
+import com.homepodplus.app.airplay.AirplayCrypto.counterNonce8
+import com.homepodplus.app.airplay.AirplayCrypto.hkdfSha512
+import com.homepodplus.app.audio.AudioMasterClock
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -952,7 +952,7 @@ class RaopSender(
         timeoutMs: Int = 10000
     ): ControlResponse {
         val req = buildRtspRequest(method, uri, contentType, body, streamId = streamId, hkp = hkp)
-        if (method == "SETUP" && com.airbridge.app.BuildConfig.DEBUG) {
+        if (method == "SETUP" && com.homepodplus.app.BuildConfig.DEBUG) {
             val hex = req.take(180).joinToString("") { "%02x".format(it) }
             listener.onLog("SETUP 请求前 180 字节: $hex")
         }
@@ -1026,7 +1026,7 @@ class RaopSender(
                     debugLog("readControlResponse: 缓冲=${plainRxBuf.size()}B")
                 } catch (e: SocketTimeoutException) {
                     listener.onLog("等待响应超时，已收到 $encBytesReceived 个加密字节")
-                    if (com.airbridge.app.BuildConfig.DEBUG) {
+                    if (com.homepodplus.app.BuildConfig.DEBUG) {
                     val cur = plainRxBuf.toByteArray()
                     val headEnd = findHeadEnd(cur)
                     val ascii = cur.take(300).joinToString("") { b ->

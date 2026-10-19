@@ -6,6 +6,8 @@ app/build/
 .idea/
 local.properties
 keystore.properties
+*.jks
+*.keystore
 .DS_Store
 captures/
 .externalNativeBuild/

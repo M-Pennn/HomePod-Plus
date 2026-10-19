@@ -1,4 +1,4 @@
-package com.airbridge.app.airplay
+﻿package com.homepodplus.app.airplay
 
 /**
  * 压缩 ALAC（Apple Lossless）编码器，用于 AirPlay 2 实时音频流。

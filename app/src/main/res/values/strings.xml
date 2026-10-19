@@ -1,6 +1,7 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AirBridge</string>
-    <string name="channel_name">AirBridge 投射服务</string>
-    <string name="notif_title">正在投射到 AirPlay 设备</string>
+    <string name="app_name">HomePod +</string>
+    <string name="channel_name">HomePod + 投送服务</string>
+    <string name="notif_title">HomePod + 正在投送</string>
+    <string name="tile_name">HomePod +</string>
 </resources>
