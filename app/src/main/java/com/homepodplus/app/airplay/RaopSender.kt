@@ -1,4 +1,4 @@
-﻿package com.homepodplus.app.airplay
+package com.homepodplus.app.airplay
 
 import com.homepodplus.app.airplay.AirplayCrypto.chacha20Poly1305Decrypt
 import com.homepodplus.app.airplay.AirplayCrypto.chacha20Poly1305Encrypt
@@ -50,6 +50,11 @@ class RaopSender(
         private const val RS_TAPS = 64
         private const val RS_PHASES = 256
         private const val AUDIO_TX_MAX = 1024
+        // 目标缓冲水位：约 200ms (8820 帧)。容量为 3 秒 (132300 帧)。
+        // 既能抵御系统调度抖动与 GC，又留有极大余量永不溢出。
+        private const val TARGET_BUFFER_FRAMES = 8820
+        // 开播初始预缓冲水线：至少蓄水 150ms 才开始发包，杜绝开播边缘欠载
+        private const val INITIAL_PREBUFFER_FRAMES = 6615
     }
 
     /** Receiver buffering policy: 按预缓冲时长降序排列（UI 芯片从左到右）。 */
@@ -1346,15 +1351,29 @@ class RaopSender(
             var lastStatsAt = SystemClock.elapsedRealtimeNanos()
             var clockLogged = false
             var cleanWindows = 0
+            var isPrebuffering = true
+
             while (running) {
                 val now = SystemClock.elapsedRealtimeNanos()
+                val available = ring.availableFrames()
+
+                // 初始或断流后的预缓冲蓄水阶段：至少累积 INITIAL_PREBUFFER_FRAMES 后才发真实数据，杜绝开播边缘欠载
+                if (isPrebuffering) {
+                    if (available < INITIAL_PREBUFFER_FRAMES) {
+                        parkNanosPrecisely(now + 2_000_000L)
+                        nextSend = SystemClock.elapsedRealtimeNanos()
+                        continue
+                    }
+                    isPrebuffering = false
+                    nextSend = now
+                }
 
                 // 发送周期：优先捕获硬件时钟（AudioRecord），其次 AudioTrack 主时钟，最后标称
                 val cap = captureRate
                 val clock = masterClock
                 val mcRate = if (clock != null && clock.isUsable) clock.rateHz() else 0.0
                 val rateHz = if (cap > 0.0) cap else if (mcRate > 0.0) mcRate else 0.0
-                if (rateHz > 0.0) {
+                val basePeriod = if (rateHz > 0.0) {
                     if (!clockLogged) {
                         clockLogged = true
                         listener.onLog(
@@ -1363,22 +1382,39 @@ class RaopSender(
                     }
                     val measured = (FRAMES_PER_PACKET * 1_000_000_000L / rateHz).toLong()
                     if (measured > 0) {
-                        periodNanos = measured.coerceIn(
-                            nominalPeriod - nominalPeriod / 64,
-                            nominalPeriod + nominalPeriod / 64
+                        measured.coerceIn(
+                            nominalPeriod - nominalPeriod / 32,
+                            nominalPeriod + nominalPeriod / 32
                         )
+                    } else nominalPeriod
+                } else {
+                    if (!clockLogged) {
+                        clockLogged = true
+                        listener.onLog("发送时钟参考: 标称 44100 Hz（捕获/主时钟均未锁定）")
                     }
-                } else if (!clockLogged) {
-                    clockLogged = true
-                    listener.onLog("发送时钟参考: 标称 44100 Hz（捕获/主时钟均未锁定）")
+                    nominalPeriod
                 }
 
-                if (ring.availableFrames() < FRAMES_PER_PACKET && framesSent == 0L) {
-                    // 等第一包真实数据，避免开播先放静音
+                // 核心：环形缓冲水线闭环比例负反馈微调 (PID P-Controller)
+                // 实时消除物理时钟微小 ppm 漂移，将环形缓冲区水位永久锁定在目标 TARGET_BUFFER_FRAMES (~200ms)
+                // 水位高于目标时微调加速发包（消减积水），水位低于目标时微调减速发包（积累水位）
+                // 调整幅度严格限制在 ±1.0% 以内，不影响听感，且彻底避免 1 小时后缓冲区干涸或溢出破音
+                val waterError = available - TARGET_BUFFER_FRAMES
+                val waterAdjustmentNanos = (waterError * 40L).coerceIn(-80_000L, 80_000L)
+                periodNanos = basePeriod - waterAdjustmentNanos
+
+                // 如果缓冲区出现断流（例如手机音频暂停，水位见底）
+                if (available < FRAMES_PER_PACKET) {
+                    isPrebuffering = true
                     underruns++
-                    parkNanosPrecisely(now + 1_000_000L)
+                    padded++
+                    // 发送完整静音包维持 AirPlay 连接时间戳连续，环形缓冲区内剩余的零散样本不受截断破坏
+                    sendSilencePacket()
+                    nextSend = now + periodNanos
+                    parkNanosPrecisely(nextSend)
                     continue
                 }
+
                 if (now - nextSend > 5_000_000L) {
                     // 落后超过 5ms 不再追赶，直接重排，避免向接收端突发灌包
                     nextSend = now
@@ -1389,11 +1425,9 @@ class RaopSender(
                     continue
                 }
 
-                // 时间线保持连续：有真实数据就发，源暂停/捕获空窗时发静音；
-                // UDP 发送已移到独立线程，这里不会因弱网阻塞。
-                if (ring.availableFrames() < FRAMES_PER_PACKET) padded++
+                // 发送音频数据包
                 var sent = 0
-                while (running && sent < 2 && now >= nextSend) {
+                while (running && sent < 2 && now >= nextSend && ring.availableFrames() >= FRAMES_PER_PACKET) {
                     try {
                         sendAudioPacket()
                     } catch (e: Exception) {
@@ -1773,6 +1807,15 @@ class RaopSender(
         if (got < FRAMES_PER_PACKET) {
             java.util.Arrays.fill(audioFrames, got * CHANNELS, audioFrames.size, 0.toShort())
         }
+        sendWirePacket(audioFrames)
+    }
+
+    private fun sendSilencePacket() {
+        java.util.Arrays.fill(audioFrames, 0.toShort())
+        sendWirePacket(audioFrames)
+    }
+
+    private fun sendWirePacket(frames: ShortArray) {
         val hdr = audioWire
         hdr[0] = 0x80.toByte()
         hdr[1] = if (firstAudio) 0xE0.toByte() else 0x60.toByte()
@@ -1784,9 +1827,9 @@ class RaopSender(
         var wireLen: Int
         if (encryptAudio) {
             val alac = if (alacOn) {
-                AlacCodec.encode(audioFrames)
+                AlacCodec.encode(frames)
             } else {
-                AlacCodec.Result(AlacCodec.encodeVerbatim(audioFrames), true)
+                AlacCodec.Result(AlacCodec.encodeVerbatim(frames), true)
             }
             System.arraycopy(alac.data, 0, audioWire, 12, alac.data.size)
             val payloadLen = alac.data.size
@@ -1800,7 +1843,7 @@ class RaopSender(
             alacPackets++
             if (alac.verbatim) alacVerbatim++
         } else {
-            wireLen = encodeL16(audioFrames, audioWire, 12)
+            wireLen = encodeL16(frames, audioWire, 12)
         }
         val total = 12 + wireLen
         val pkt = audioWire.copyOf(total)
@@ -1842,7 +1885,9 @@ class RaopSender(
 
     private fun sendSyncPacket(first: Boolean) {
         if (serverPort == 0 || controlPort == 0) return
-        val curNtp = ts2ntp(startTs + framesSent, RATE)
+        // 关键修复：NTP 时间戳必须取真实当刻的 ntpNow()，与 timingSock 授时保持 100% 绝对一致，
+        // 避免 1 小时物理时钟累计漂移导致 HomePod 判定失步并频繁发起 0x55 重传丢帧破音
+        val curNtp = ntpNow()
         val now = rtptime32()
         val pkt = ByteArray(20)
         pkt[0] = if (first) 0x90.toByte() else 0x80.toByte()

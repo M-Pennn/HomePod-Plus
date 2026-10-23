@@ -48,8 +48,12 @@ class CastService : Service() {
 
     private var projection: MediaProjection? = null
     private var capture: AudioCapture? = null
-    private var sender1: RaopSender? = null
-    private var sender2: RaopSender? = null
+    private val activeSenders = ArrayList<RaopSender>()
+    private var startedStates = BooleanArray(0)
+    private var savedTargetDevices: List<AirplayDevice> = emptyList()
+    @Volatile private var streamingSeconds: Long = 0L
+    val sender1: RaopSender? get() = activeSenders.getOrNull(0)
+    val sender2: RaopSender? get() = activeSenders.getOrNull(1)
     private var stopping = false
     private var sessionGeneration = 0
     private var wakeLock: PowerManager.WakeLock? = null
@@ -71,8 +75,6 @@ class CastService : Service() {
     private var splitRightBuf = ShortArray(0)
 
     // 连接就绪与首包推流状态（确保 Live Update 仅在推流完全就绪后弹出）
-    @Volatile private var s1Started = false
-    @Volatile private var s2Started = false
     @Volatile private var hasCapturedPcm = false
     @Volatile private var hasPushedFirstFrame = false
 
@@ -81,7 +83,7 @@ class CastService : Service() {
 
     private val volPoller = object : Runnable {
         override fun run() {
-            if (!stopping && (sender1 != null || sender2 != null)) {
+            if (!stopping && activeSenders.isNotEmpty()) {
                 val am = audioMgr
                 if (am != null) {
                     try {
@@ -186,8 +188,6 @@ class CastService : Service() {
     private fun startCasting(intent: Intent) {
         if (stopping) return
         stopping = false
-        s1Started = false
-        s2Started = false
         hasCapturedPcm = false
         hasPushedFirstFrame = false
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
@@ -204,12 +204,18 @@ class CastService : Service() {
         val isDual = intent.getBooleanExtra(EXTRA_IS_DUAL, true)
         val config = CastController.state.value.dualConfig
 
-        val dev1: AirplayDevice
-        val dev2: AirplayDevice?
+        val targetDevices: List<AirplayDevice>
 
         if (isDual && config.isConfigured) {
-            dev1 = AirplayDevice(name = config.speaker1Name, host = config.speaker1Host, port = config.speaker1Port, type = "_airplay._tcp.local")
-            dev2 = AirplayDevice(name = config.speaker2Name, host = config.speaker2Host, port = config.speaker2Port, type = "_airplay._tcp.local")
+            val count = config.deviceCount.coerceIn(1, 4)
+            targetDevices = config.speakers.take(count).mapIndexed { idx, spk ->
+                AirplayDevice(
+                    name = spk.name.ifBlank { "设备 ${idx + 1}" },
+                    host = spk.host,
+                    port = spk.port,
+                    type = "_airplay._tcp.local"
+                )
+            }
         } else {
             val host = intent.getStringExtra(EXTRA_HOST) ?: run {
                 stopSelf()
@@ -217,12 +223,17 @@ class CastService : Service() {
             }
             val port = intent.getIntExtra(EXTRA_PORT, 7000)
             val name = intent.getStringExtra(EXTRA_NAME) ?: host
-            dev1 = AirplayDevice(name = name, host = host, port = port, type = "_airplay._tcp.local")
-            dev2 = null
+            targetDevices = listOf(
+                AirplayDevice(name = name, host = host, port = port, type = "_airplay._tcp.local")
+            )
         }
 
+        savedTargetDevices = targetDevices
+        streamingSeconds = 0L
+        CastController.updateCurrentDuration(0L)
+
         startForegroundCompat()
-        CastController.setConnecting(dev1)
+        CastController.setConnecting(targetDevices.first())
 
         val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val proj = mpm.getMediaProjection(resultCode, data) ?: run {
@@ -245,7 +256,7 @@ class CastService : Service() {
         // 投送启动：自动静音手机外放，开启物理音量键联动
         muteSpeaker()
 
-        // 启动反应式状态监听，当音量或配置变化时即时刷新通知
+        // 启动反应式状态监听，当音量或配置变化时即时刷新通知；运行推流时长计数与定时重连
         serviceScope?.cancel()
         val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         serviceScope = scope
@@ -256,119 +267,80 @@ class CastService : Service() {
                 }
             }
         }
-
-        val gen = ++sessionGeneration
-
-        fun createSender(device: AirplayDevice, isPrimary: Boolean): RaopSender {
-            return RaopSender(
-                device,
-                object : RaopSender.Listener {
-                    override fun onState(state: RaopSender.State) {
-                        if (gen != sessionGeneration) return
-                        when (state) {
-                            RaopSender.State.PAIRING -> CastController.setStatus("正在配对 [${device.name}]...")
-                            RaopSender.State.HANDSHAKE -> CastController.setStatus("正在建立会话 [${device.name}]...")
-                            else -> Unit
-                        }
-                    }
-
-                    override fun onLog(message: String) = CastController.addLog("[${device.name}] $message")
-
-                    override fun onStarted() {
-                        if (gen != sessionGeneration) return
-                        if (isPrimary) {
-                            s1Started = true
-                        } else {
-                            s2Started = true
-                        }
-                        val dual = sender2 != null
-                        val allConnected = s1Started && (!dual || s2Started)
-                        if (allConnected) {
-                            CastController.setStreamingDual(sender1, sender2)
-                        }
-                        val masterVol = CastController.state.value.volume
-                        if (isPrimary) {
-                            sender1?.setVolume(masterVol.toDouble())
-                        } else {
-                            val slaveVol = CastController.state.value.dualConfig.calculateSlaveVolume(masterVol)
-                            sender2?.setVolume(slaveVol.toDouble())
-                        }
-                        if (allConnected && hasCapturedPcm && !hasPushedFirstFrame) {
-                            hasPushedFirstFrame = true
-                            uiHandler.post { updateLiveNotification() }
-                        }
-                    }
-
-                    override fun onStopped(reason: String?) {
-                        if (gen != sessionGeneration) return
-                        CastController.addLog("[${device.name}] 已停止: $reason")
-                        if (isPrimary) {
-                            s1Started = false
-                        } else {
-                            s2Started = false
-                        }
-                        if (isPrimary || sender2 == null) {
-                            CastController.resetConnection(reason)
-                            cleanup()
-                            stopSelf()
-                        } else {
-                            uiHandler.post { updateLiveNotification() }
+        scope.launch {
+            while (!stopping) {
+                kotlinx.coroutines.delay(1000L)
+                if (!stopping && startedStates.isNotEmpty() && startedStates.all { it }) {
+                    streamingSeconds++
+                    CastController.updateCurrentDuration(streamingSeconds)
+                    val cfg = CastController.state.value.dualConfig
+                    if (cfg.autoReconnectEnabled && cfg.autoReconnectMinutes > 0) {
+                        val limitSec = cfg.autoReconnectMinutes * 60L
+                        if (streamingSeconds >= limitSec) {
+                            reconnectSenders("已持续播放 ${cfg.autoReconnectMinutes} 分钟，达到定时重连阈值")
                         }
                     }
                 }
-            ).apply {
-                latencyMode = CastController.state.value.latencyMode
-                robustMode = CastController.state.value.robustMode
-                alacOn = CastController.state.value.alacOn
             }
         }
 
-        val s1 = createSender(dev1, isPrimary = true)
-        val s2 = dev2?.let { createSender(it, isPrimary = false) }
+        val gen = ++sessionGeneration
+        startedStates = BooleanArray(targetDevices.size) { false }
+        activeSenders.clear()
 
-        sender1 = s1
-        sender2 = s2
-        CastController.sender1 = s1
-        CastController.sender2 = s2
+        for (i in targetDevices.indices) {
+            val snd = createSender(targetDevices[i], i, gen)
+            activeSenders.add(snd)
+        }
+        CastController.setStreamingMulti(activeSenders)
 
         capture = AudioCapture(
             proj,
             { samples, rate ->
                 hasCapturedPcm = true
-                val dual = s2 != null
-                val allConnected = s1Started && (!dual || s2Started)
+                val allConnected = startedStates.isNotEmpty() && startedStates.all { it }
                 if (allConnected && !hasPushedFirstFrame) {
                     hasPushedFirstFrame = true
                     uiHandler.post { updateLiveNotification() }
                 }
                 if (!testToneOn) {
-                    val dualCfg = CastController.state.value.dualConfig
-                    if (s2 != null && dualCfg.channelMode == ChannelMode.SPLIT) {
+                    val count = activeSenders.size
+                    if (count == 1) {
+                        activeSenders.getOrNull(0)?.pushPcm(samples, rate)
+                    } else {
+                        val activeSpeakers = config.speakers.take(count)
+                        val needsLeft = activeSpeakers.any { it.channel == SpeakerChannel.LEFT }
+                        val needsRight = activeSpeakers.any { it.channel == SpeakerChannel.RIGHT }
                         val len = samples.size
-                        if (splitLeftBuf.size != len) {
+                        if ((needsLeft || needsRight) && splitLeftBuf.size != len) {
                             splitLeftBuf = ShortArray(len)
                             splitRightBuf = ShortArray(len)
                         }
-                        var i = 0
-                        while (i < len - 1) {
-                            val l = samples[i]
-                            val r = samples[i + 1]
-                            splitLeftBuf[i] = l
-                            splitLeftBuf[i + 1] = l
-                            splitRightBuf[i] = r
-                            splitRightBuf[i + 1] = r
-                            i += 2
+                        if (needsLeft || needsRight) {
+                            var i = 0
+                            while (i < len - 1) {
+                                val l = samples[i]
+                                val r = samples[i + 1]
+                                if (needsLeft) {
+                                    splitLeftBuf[i] = l
+                                    splitLeftBuf[i + 1] = l
+                                }
+                                if (needsRight) {
+                                    splitRightBuf[i] = r
+                                    splitRightBuf[i + 1] = r
+                                }
+                                i += 2
+                            }
                         }
-                        if (dualCfg.leftSpeaker == LeftSpeakerAssignment.SPEAKER1_LEFT) {
-                            s1.pushPcm(splitLeftBuf, rate)
-                            s2.pushPcm(splitRightBuf, rate)
-                        } else {
-                            s1.pushPcm(splitRightBuf, rate)
-                            s2.pushPcm(splitLeftBuf, rate)
+                        for (idx in 0 until minOf(count, activeSenders.size)) {
+                            val snd = activeSenders[idx]
+                            val ch = activeSpeakers[idx].channel
+                            when (ch) {
+                                SpeakerChannel.STEREO -> snd.pushPcm(samples, rate)
+                                SpeakerChannel.LEFT -> snd.pushPcm(splitLeftBuf, rate)
+                                SpeakerChannel.RIGHT -> snd.pushPcm(splitRightBuf, rate)
+                            }
                         }
-                    } else {
-                        s1.pushPcm(samples, rate)
-                        s2?.pushPcm(samples, rate)
                     }
                 }
             },
@@ -376,8 +348,9 @@ class CastService : Service() {
             { msg -> CastController.addLog(msg) }
         )
         capture!!.onRate = { rate ->
-            s1.onCaptureRate(rate)
-            s2?.onCaptureRate(rate)
+            for (snd in activeSenders) {
+                snd.onCaptureRate(rate)
+            }
         }
 
         if (!capture!!.start()) {
@@ -388,14 +361,111 @@ class CastService : Service() {
         }
 
         acquireNetworkLocks()
-        s1.start()
-        s2?.start()
+        for (snd in activeSenders) {
+            snd.start()
+        }
+    }
+
+    private fun createSender(device: AirplayDevice, index: Int, gen: Int): RaopSender {
+        return RaopSender(
+            device,
+            object : RaopSender.Listener {
+                override fun onState(state: RaopSender.State) {
+                    if (gen != sessionGeneration) return
+                    when (state) {
+                        RaopSender.State.PAIRING -> CastController.setStatus("正在配对 [${device.name}]...")
+                        RaopSender.State.HANDSHAKE -> CastController.setStatus("正在建立会话 [${device.name}]...")
+                        else -> Unit
+                    }
+                }
+
+                override fun onLog(message: String) = CastController.addLog("[${device.name}] $message")
+
+                override fun onStarted() {
+                    if (gen != sessionGeneration) return
+                    if (index < startedStates.size) {
+                        startedStates[index] = true
+                    }
+                    val allConnected = startedStates.isNotEmpty() && startedStates.all { it }
+                    if (allConnected) {
+                        CastController.setStreamingMulti(activeSenders)
+                    }
+                    val masterVol = CastController.state.value.volume
+                    val config = CastController.state.value.dualConfig
+                    val thisVol = config.calculateVolume(index, masterVol)
+                    if (index < activeSenders.size) {
+                        activeSenders[index].setVolume(thisVol.toDouble())
+                    }
+                    if (allConnected && hasCapturedPcm && !hasPushedFirstFrame) {
+                        hasPushedFirstFrame = true
+                        uiHandler.post { updateLiveNotification() }
+                    }
+                }
+
+                override fun onStopped(reason: String?) {
+                    if (gen != sessionGeneration) return
+                    CastController.addLog("[${device.name}] 已停止: $reason")
+                    if (reason?.contains("被设备的访问控制拒绝") == true) {
+                        CastController.triggerAccessDeniedAlert()
+                    }
+                    if (index < startedStates.size) {
+                        startedStates[index] = false
+                    }
+                    if (index == 0 || startedStates.none { it }) {
+                        val dur = streamingSeconds
+                        streamingSeconds = 0L
+                        CastController.recordSessionFinished(dur)
+                        CastController.resetConnection(reason)
+                        cleanup()
+                        stopSelf()
+                    } else {
+                        uiHandler.post { updateLiveNotification() }
+                    }
+                }
+            }
+        ).apply {
+            latencyMode = CastController.state.value.latencyMode
+            robustMode = CastController.state.value.robustMode
+            alacOn = CastController.state.value.alacOn
+        }
+    }
+
+    private fun reconnectSenders(reason: String) {
+        if (stopping || savedTargetDevices.isEmpty()) return
+        CastController.addLog("触发定时自动重连 ($reason)，正在快速重建音频会话...")
+        val finishedDuration = streamingSeconds
+        streamingSeconds = 0L
+        CastController.recordSessionFinished(finishedDuration)
+
+        val gen = ++sessionGeneration
+        val oldSenders = ArrayList(activeSenders)
+        activeSenders.clear()
+        startedStates = BooleanArray(savedTargetDevices.size) { false }
+
+        for (snd in oldSenders) {
+            try {
+                snd.stop()
+            } catch (_: Exception) {}
+        }
+
+        for (i in savedTargetDevices.indices) {
+            val snd = createSender(savedTargetDevices[i], i, gen)
+            activeSenders.add(snd)
+        }
+        CastController.setStreamingMulti(activeSenders)
+
+        for (snd in activeSenders) {
+            snd.start()
+        }
     }
 
     private fun stopCasting() {
         if (stopping) return
         stopping = true
         CastController.addLog("正在停止投射...")
+        val dur = streamingSeconds
+        streamingSeconds = 0L
+        CastController.recordSessionFinished(dur)
         stopTestTone()
         cleanup()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -429,20 +499,23 @@ class CastService : Service() {
 
     private fun cleanup() {
         pauseMediaPlayback()
-        s1Started = false
-        s2Started = false
+        val dur = streamingSeconds
+        streamingSeconds = 0L
+        if (dur > 0L) {
+            CastController.recordSessionFinished(dur)
+        }
+        startedStates = BooleanArray(0)
         hasCapturedPcm = false
         hasPushedFirstFrame = false
         serviceScope?.cancel()
         serviceScope = null
         unmuteSpeaker()
         stopTestTone()
-        sender1?.stop()
-        sender2?.stop()
-        sender1 = null
-        sender2 = null
-        CastController.sender1 = null
-        CastController.sender2 = null
+        for (snd in activeSenders) {
+            snd.stop()
+        }
+        activeSenders.clear()
+        CastController.resetConnection(null)
         capture?.stop()
         releaseNetworkLocks()
         capture = null
@@ -523,8 +596,7 @@ class CastService : Service() {
         if (stopping) return false
         val st = CastController.state.value
         if (!st.streaming) return false
-        val dual = sender2 != null
-        val connectionsEstablished = s1Started && (!dual || s2Started)
+        val connectionsEstablished = startedStates.isNotEmpty() && startedStates.all { it }
         return connectionsEstablished && hasPushedFirstFrame
     }
 
@@ -637,7 +709,7 @@ class CastService : Service() {
     }
 
     private fun toggleTestTone() {
-        if (sender1 == null && sender2 == null) {
+        if (activeSenders.isEmpty()) {
             CastController.addLog("当前没有正在投射的会话")
             return
         }
@@ -673,8 +745,9 @@ class CastService : Service() {
                 if (phase > 2.0 * Math.PI) phase -= 2.0 * Math.PI
                 i += 2
             }
-            sender1?.pushPcm(buf, rate)
-            sender2?.pushPcm(buf, rate)
+            for (snd in activeSenders) {
+                snd.pushPcm(buf, rate)
+            }
             try {
                 Thread.sleep(sleepMs)
             } catch (e: InterruptedException) {
