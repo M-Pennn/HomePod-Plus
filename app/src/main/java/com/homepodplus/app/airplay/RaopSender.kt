@@ -64,7 +64,7 @@ class RaopSender(
         SAFE(88200, 44100, 176400),
         STABLE(66150, 11025, 88200),
         LOW(11025, 4410, 44100),
-        ULTRA(4410, 2205, 22050)
+        CUSTOM(0, 0, 0) // 自适应探测与自选极速直通 (<250ms)
     }
 
     private val ring = PcmRingBuffer(RATE * 3)
@@ -86,6 +86,9 @@ class RaopSender(
 
     @Volatile
     var latencyMode = LatencyMode.STABLE
+
+    @Volatile
+    var customLatencyMs = 140
 
     @Volatile
     var robustMode = false
@@ -236,7 +239,11 @@ class RaopSender(
     fun start() {
         stop()
         wasUserStop = false
-        latencyFrames = latencyMode.frames
+        latencyFrames = if (latencyMode == LatencyMode.CUSTOM) {
+            (customLatencyMs * RATE / 1000).coerceIn(3528, 10584)
+        } else {
+            latencyMode.frames
+        }
         synchronized(volumeLock) {
             pendingVolumeDb = -1000.0
             volumeDirty = false
@@ -780,6 +787,13 @@ class RaopSender(
     }
 
     private fun ap2SetupStream() {
+        val (lMax, lMin) = if (latencyMode == LatencyMode.CUSTOM) {
+            val maxF = (latencyFrames * 2).coerceAtMost(22050)
+            val minF = (latencyFrames / 2).coerceAtLeast(1764)
+            maxF to minF
+        } else {
+            latencyMode.max to latencyMode.min
+        }
         val stream = PValue.DictV(
             listOf(
                 "audioFormat" to PValue.IntV(0x40000L),
@@ -787,8 +801,8 @@ class RaopSender(
                 "controlPort" to PValue.IntV(controlSock!!.localPort.toLong()),
                 "ct" to PValue.IntV(2),
                 "isMedia" to PValue.True,
-                "latencyMax" to PValue.IntV(latencyMode.max.toLong()),
-                "latencyMin" to PValue.IntV(latencyMode.min.toLong()),
+                "latencyMax" to PValue.IntV(lMax.toLong()),
+                "latencyMin" to PValue.IntV(lMin.toLong()),
                 "shk" to PValue.DataV(audioKey),
                 "spf" to PValue.IntV(FRAMES_PER_PACKET.toLong()),
                 "sr" to PValue.IntV(RATE.toLong()),
@@ -1360,27 +1374,54 @@ class RaopSender(
             var clockLogged = false
             var cleanWindows = 0
             var isPrebuffering = true
+            val isLowLatencyTrack = latencyFrames < 11025
             // 水位与预缓冲必须适配当前的 latencyFrames：
-            // 本地蓄水绝不能超过音箱端预缓冲，否则数据一出手机就已经在音箱端超时
-            val targetBufferFrames = minOf(TARGET_BUFFER_FRAMES, latencyFrames * 3 / 4)
+            // 低延迟直通轨道 (<250ms) 保持微小弹性缓冲 (约 20~25ms)，绝不长时间滞留音频；传统轨道按标准比例设防
+            val targetBufferFrames = if (isLowLatencyTrack) {
+                minOf(1102, latencyFrames / 3)
+            } else {
+                minOf(TARGET_BUFFER_FRAMES, latencyFrames * 3 / 4)
+            }
             val initialPrebufferFrames = minOf(INITIAL_PREBUFFER_FRAMES, latencyFrames / 2)
 
             while (running) {
                 val now = SystemClock.elapsedRealtimeNanos()
                 val available = ring.availableFrames()
 
-                // 初始或断流后的预缓冲蓄水阶段：至少累积 initialPrebufferFrames 后才发真实数据，杜绝开播边缘欠载
-                if (isPrebuffering) {
-                    if (available < initialPrebufferFrames) {
-                        parkNanosPrecisely(now + 2_000_000L)
-                        nextSend = SystemClock.elapsedRealtimeNanos()
+                if (isLowLatencyTrack) {
+                    // 独立低延迟直通引擎 (<250ms)：
+                    // 彻底废除 50ms 强制闭闸蓄水，数据随来随发！
+                    // 遇到临时欠载 (< FRAMES_PER_PACKET)，只发单包 8ms 静音包垫时间戳，绝不闭闸暂停！
+                    if (available < FRAMES_PER_PACKET) {
+                        underruns++
+                        padded++
+                        sendSilencePacket()
+                        nextSend = now + periodNanos
+                        parkNanosPrecisely(nextSend)
                         continue
                     }
-                    isPrebuffering = false
-                    nextSend = now
-                }
+                } else {
+                    // 传统高稳健引擎 (>=250ms)：100% 保持原有 initialPrebufferFrames 迟滞蓄水机制不变！
+                    if (isPrebuffering) {
+                        if (available < initialPrebufferFrames) {
+                            parkNanosPrecisely(now + 2_000_000L)
+                            nextSend = SystemClock.elapsedRealtimeNanos()
+                            continue
+                        }
+                        isPrebuffering = false
+                        nextSend = now
+                    }
 
-                // 发送周期：优先捕获硬件时钟（AudioRecord），其次 AudioTrack 主时钟，最后标称
+                    if (available < FRAMES_PER_PACKET) {
+                        isPrebuffering = true
+                        underruns++
+                        padded++
+                        sendSilencePacket()
+                        nextSend = now + periodNanos
+                        parkNanosPrecisely(nextSend)
+                        continue
+                    }
+                }
                 val cap = captureRate
                 val clock = masterClock
                 val mcRate = if (clock != null && clock.isUsable) clock.rateHz() else 0.0
@@ -1770,7 +1811,7 @@ class RaopSender(
 
     /** 冗余副本的错峰延迟：必须小于接收端缓冲，避免补发晚于播放时刻。 */
     private fun redundancyDelayNanos(): Long = when (latencyMode) {
-        LatencyMode.ULTRA -> 40_000_000L
+        LatencyMode.CUSTOM -> (latencyFrames * 1_000_000_000L / RATE / 3).toLong()
         LatencyMode.LOW -> 100_000_000L
         LatencyMode.STABLE -> 200_000_000L
         LatencyMode.SAFE -> 1_000_000_000L
@@ -1865,7 +1906,12 @@ class RaopSender(
         val sock = audioSock ?: return
         // 交给独立发送线程：pacer 不再阻塞在 UDP send 上。
         // 超过接收端预缓冲窗口的过期包会被发送线程丢弃，避免弱网恢复后补发陈年老包。
-        val usefulMarginNanos = minOf(30_000_000L, latencyFrames * 1_000_000_000L / RATE / 4)
+        val isLowLatencyTrack = latencyFrames < 11025
+        val usefulMarginNanos = if (isLowLatencyTrack) {
+            5_000_000L // 极低延迟下仅保留 5ms 基础空口下限，防止 txLoop 误杀
+        } else {
+            minOf(30_000_000L, latencyFrames * 1_000_000_000L / RATE / 4)
+        }
         val usefulUntil = SystemClock.elapsedRealtimeNanos() +
             latencyFrames * 1_000_000_000L / RATE - usefulMarginNanos
         synchronized(audioTxLock) {
@@ -1880,8 +1926,8 @@ class RaopSender(
             backlog[seq and (BACKLOG_SIZE - 1)] = pkt
             backlogSeq[seq and (BACKLOG_SIZE - 1)] = seq
         }
-        // 手动或自动冗余：同一包延迟一段时间后补发，错开 Wi-Fi 突发丢包
-        if ((robustMode || adaptiveRedundancy) && !lossStorm) {
+        // 手动或自动冗余：同一包延迟一段时间后补发，错开 Wi-Fi 突发丢包（低延迟直通轨道禁用冗余）
+        if (!isLowLatencyTrack && (robustMode || adaptiveRedundancy) && !lossStorm) {
             enqueueDelayed(pkt, audioSock, deviceAddress, serverPort, redundancyDelayNanos())
         }
         firstAudio = false

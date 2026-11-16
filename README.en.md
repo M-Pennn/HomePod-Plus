@@ -1,11 +1,11 @@
-# HomePod + — AirPlay 2 Smart Multi/Dual Audio Streamer for Android (v2.2.0)
+# HomePod + — AirPlay 2 Smart Multi/Dual Audio Streamer for Android (v2.3.0)
 
 > **Stream any audio from Android to Apple HomePod / HomePod mini / Apple TV with 1~4 multi-speaker smart sync, wireless stereo pairing, independent channel routing, slave volume tracking, and scheduled anti-crackling auto-reconnect.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-green.svg)](https://developer.android.com/about/versions/10)
 [![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![Version](https://img.shields.io/badge/Version-2.2.0-black.svg)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.3.0-black.svg)](https://github.com)
 
 **Language / 语言：**
 [English](README.en.md) | [简体中文](README.md)
@@ -76,6 +76,19 @@ Due to Apple's walled garden, HomePod and HomePod mini only natively support Air
 - **Safety Timeout & Manual Control**: Can be toggled on demand with an automatic 10-minute safety stop limit, with support for manual stop anytime and a persistent sticky countdown banner;
 - **Automatic 3-Session Retention**: Automatically retains only the 3 most recent diagnostic sessions, preventing excessive disk usage;
 - **One-Click ZIP Export**: Package and export recent sessions into a standard `.zip` file via Android's native share sheet (WeChat, Cloud Drive, Email, or Local Files) for rapid AI and developer troubleshooting.
+
+### 11. 📈 Continuous Latency Prober, Dynamic Waveform Chart & Sub-250ms Straight-Through Engine (v2.3.0)
+- **Manual Start/Stop Continuous Probing**: In the "Custom (<0.25s)" mode, users can manually start and stop non-blocking continuous latency probing, sampling real-time physical Wi-Fi RTT and Android AudioRecord jitter every 500ms;
+- **Real-Time Bézier Waveform Chart (Canvas)**: Renders a smooth animated curve and soft gradient glow showing the last 50 latency points with 100ms/150ms/200ms guideline grid lines;
+- **P50 / P90 / P99 Coverage Percentiles & One-Tap Presets**:
+  - **P50 Extreme**: Covers 50% of network & recording jitter, optimal for high-quality near-field Wi-Fi and ultra-low latency;
+  - **P90 Recommended**: Covers 90% of jitter variations, offering the ideal balance between low latency and stability;
+  - **P99 Safe Baseline**: Covers 99% of jitter spikes, providing maximum resilience against stuttering;
+  - Supports 1-tap preset application as well as a 5ms-step precision slider between 80ms and 240ms;
+- **Zero-Hysteresis Sub-250ms Straight-Through Engine**:
+  - Standard buffering logic enforces a 50ms freezing rebuffer whenever the queue empties, which causes cyclic stuttering when latency is $<250$ms;
+  - The dedicated sub-250ms pipeline eliminates the 50ms freeze completely. When temporary starving occurs, it injects a single 8ms silent packet and immediately resumes audio playback as soon as the next chunk arrives;
+  - The $\ge 250$ms pipeline remains 100% untouched to ensure rock-solid stability for music streaming.
 
 ---
 

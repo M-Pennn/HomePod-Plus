@@ -1,11 +1,11 @@
-# HomePod + — 安卓 AirPlay 2 多机/双机智能音频投送器 (v2.2.0)
+# HomePod + — 安卓 AirPlay 2 多机/双机智能音频投送器 (v2.3.0)
 
 > **让安卓手机自由投送音频至 Apple HomePod / HomePod mini / Apple TV，支持 1~4 台多音箱智能协同、无线立体声配对、独立声道路由、从属音量联动与定时防破音重连。**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-green.svg)](https://developer.android.com/about/versions/10)
 [![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![Version](https://img.shields.io/badge/Version-2.2.0-black.svg)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.3.0-black.svg)](https://github.com)
 
 **语言 / Language：**
 [简体中文](README.md) | [English](README.en.md)
@@ -78,6 +78,19 @@
 - **安全限时与随时手动结束**：支持一键开启，具备最长 10 分钟自动停止保护机制，同时支持随时手动提前结束，常驻胶囊展示实时剩余时间；
 - **自动存档最近 3 次**：严格自动轮转并保留最近 3 次日志记录，杜绝存储空间无节制占用；
 - **一键打包导出 ZIP**：提供一键「打包导出最近三次日志为 ZIP」功能，调起系统标准分享面板（微信、QQ、网盘、邮件或保存到本地），极大方便用户在遇到卡顿、杂音或连接问题时快速提交给 AI 或开发者分析定位根本原因。
+
+### 11. 📈 持续延迟探测、动态波形曲线与直通极速引擎 (v2.3.0)
+- **手动启停无限时持续探测**：在「极速自选(<0.25s)」模式下提供手动开始/停止探测按键，支持持续采样 Wi-Fi 往返 RTT 时延与 Android AudioRecord 系统音频捕获抖动；
+- **实时贝塞尔波形曲线图 (Canvas)**：以平滑曲线与渐变光晕直观展现最近 50 次延迟与抖动波动走势，标定 100ms/150ms/200ms 网格线；
+- **P50 / P90 / P99 覆盖率指标与快捷套用**：
+  - **P50 极限模式**：覆盖 50% 网络与录音抖动，适合极近距离高品质局域网与极限低延迟；
+  - **P90 推荐模式**：覆盖 90% 抖动波动，兼顾快速响应与极佳稳定性；
+  - **P99 保底模式**：覆盖 99% 最严苛抖动情况，保障极低卡顿风险；
+  - 用户可一键套用推荐覆盖率，亦可在 80ms~240ms 区间自由以 5ms 步进细腻滑块微调；
+- **独立亚 250ms 零滞后直通引擎**：
+  - 传统方案在缓冲低于阈值时会强制冻结 50ms 重新蓄水，在 $<250$ms 延迟下容易导致周期性高频断续；
+  - 新增独立直通管道彻底取消 50ms 停顿，缓冲偶发告罄时仅补入单个 8ms 静音包并即刻恢复真实音频，实现极速流畅推流；
+  - 原有 $\ge 250$ms 稳定模式保持 100% 原始逻辑不变，确保超长播放稳如磐石。
 
 ---
 

@@ -16,10 +16,13 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -98,7 +101,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -264,7 +272,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (isFinishing) CastController.stopDiscovery()
+        if (isFinishing) {
+            CastController.stopDiscovery()
+            LatencyProber.stopProbing()
+        }
         super.onDestroy()
     }
 }
@@ -316,6 +327,7 @@ private fun AppScaffold(
 ) {
     val hazeState = remember { HazeState() }
     val detailedLogState by DetailedLogger.state.collectAsState()
+    val proberState by LatencyProber.state.collectAsState()
     val context = LocalContext.current
     val view = LocalView.current
 
@@ -822,6 +834,7 @@ private fun ConfigScreen(
     val view = LocalView.current
     val scrollState = rememberScrollState()
     val detailedLogState by DetailedLogger.state.collectAsState()
+    val proberState by LatencyProber.state.collectAsState()
 
     var deviceCount by remember(ui.dualConfig) { mutableIntStateOf(ui.dualConfig.deviceCount) }
 
@@ -1344,6 +1357,9 @@ private fun ConfigScreen(
                             selected = ui.latencyMode == mode,
                             onClick = {
                                 AppHaptics.tick(view)
+                                if (mode != LatencyMode.CUSTOM) {
+                                    LatencyProber.stopProbing()
+                                }
                                 CastController.setLatencyMode(mode)
                             },
                             label = {
@@ -1352,7 +1368,7 @@ private fun ConfigScreen(
                                         LatencyMode.SAFE -> "网络稳定(2s)"
                                         LatencyMode.STABLE -> "稳定(1.5s)"
                                         LatencyMode.LOW -> "低延迟(0.25s)"
-                                        LatencyMode.ULTRA -> "极低(0.1s)"
+                                        LatencyMode.CUSTOM -> "极速自选(<0.25s)"
                                     }
                                 )
                             },
@@ -1369,6 +1385,259 @@ private fun ConfigScreen(
                                 borderColor = BaseTheme.Divider,
                                 selectedBorderColor = BaseTheme.Primary
                             )
+                        )
+                    }
+                }
+
+                // 极速自选模式下的持续探测与延迟调优卡片
+                AnimatedVisibility(
+                    visible = ui.latencyMode == LatencyMode.CUSTOM,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(BaseTheme.RadiusMd)
+                            .background(BaseTheme.Surface)
+                            .border(1.dp, BaseTheme.Divider, BaseTheme.RadiusMd)
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // 头部与探测控制
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "极速直通延迟调优 (<250ms)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = BaseTheme.TextPrimary
+                                )
+                                Text(
+                                    if (proberState.isProbing) "持续探测中: ${proberState.durationSeconds} 秒 (每500ms采样)" else "点击开始探测以获取最适合您局域网的延迟值",
+                                    fontSize = 11.sp,
+                                    color = if (proberState.isProbing) Color(0xFF34C759) else BaseTheme.TextSecondary
+                                )
+                            }
+
+                            val targetHost = ui.dualConfig.speakers.firstOrNull()?.host?.ifBlank { null }
+                                ?: ui.devices.firstOrNull()?.host
+                                ?: ""
+                            val targetPort = ui.dualConfig.speakers.firstOrNull()?.port ?: 7000
+
+                            if (proberState.isProbing) {
+                                Button(
+                                    onClick = {
+                                        AppHaptics.tick(view)
+                                        LatencyProber.stopProbing()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = BaseTheme.Danger),
+                                    shape = BaseTheme.RadiusPill,
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Text("停止探测", fontSize = 12.sp, color = Color.White)
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        AppHaptics.tick(view)
+                                        LatencyProber.startProbing(targetHost, targetPort)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = BaseTheme.Primary),
+                                    shape = BaseTheme.RadiusPill,
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Text("开始持续探测", fontSize = 12.sp, color = Color.White)
+                                }
+                            }
+                        }
+
+                        // 实时曲线图
+                        LatencyCurveChart(
+                            points = proberState.historyPoints,
+                            isProbing = proberState.isProbing,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(130.dp)
+                        )
+
+                        // 推荐覆盖率快速选择 (P50, P90, P99)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                "延迟覆盖率快捷选择 (点击直接应用):",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = BaseTheme.TextSecondary
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // P50 极限
+                                val p50Val = if (proberState.p50Ms > 0) proberState.p50Ms else 110
+                                val isP50Selected = ui.customLatencyMs == p50Val
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            AppHaptics.tick(view)
+                                            CastController.setCustomLatencyMs(p50Val)
+                                        },
+                                    shape = BaseTheme.RadiusSm,
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isP50Selected) BaseTheme.Primary else BaseTheme.SurfaceSecondary
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            "P50 极限",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (isP50Selected) Color.White else BaseTheme.TextSecondary
+                                        )
+                                        Text(
+                                            "${p50Val}ms",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isP50Selected) Color.White else BaseTheme.TextPrimary
+                                        )
+                                        Text(
+                                            "50%覆盖·极速",
+                                            fontSize = 9.sp,
+                                            color = if (isP50Selected) Color(0xFFD1D1D6) else BaseTheme.TextTertiary
+                                        )
+                                    }
+                                }
+
+                                // P90 推荐
+                                val p90Val = if (proberState.p90Ms > 0) proberState.p90Ms else 140
+                                val isP90Selected = ui.customLatencyMs == p90Val
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            AppHaptics.tick(view)
+                                            CastController.setCustomLatencyMs(p90Val)
+                                        },
+                                    shape = BaseTheme.RadiusSm,
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isP90Selected) BaseTheme.Primary else BaseTheme.SurfaceSecondary
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            "P90 推荐",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (isP90Selected) Color.White else BaseTheme.TextSecondary
+                                        )
+                                        Text(
+                                            "${p90Val}ms",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isP90Selected) Color.White else BaseTheme.TextPrimary
+                                        )
+                                        Text(
+                                            "90%覆盖·平衡",
+                                            fontSize = 9.sp,
+                                            color = if (isP90Selected) Color(0xFFD1D1D6) else BaseTheme.TextTertiary
+                                        )
+                                    }
+                                }
+
+                                // P99 保底
+                                val p99Val = if (proberState.p99Ms > 0) proberState.p99Ms else 180
+                                val isP99Selected = ui.customLatencyMs == p99Val
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            AppHaptics.tick(view)
+                                            CastController.setCustomLatencyMs(p99Val)
+                                        },
+                                    shape = BaseTheme.RadiusSm,
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isP99Selected) BaseTheme.Primary else BaseTheme.SurfaceSecondary
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            "P99 保底",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (isP99Selected) Color.White else BaseTheme.TextSecondary
+                                        )
+                                        Text(
+                                            "${p99Val}ms",
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isP99Selected) Color.White else BaseTheme.TextPrimary
+                                        )
+                                        Text(
+                                            "99%覆盖·超稳",
+                                            fontSize = 9.sp,
+                                            color = if (isP99Selected) Color(0xFFD1D1D6) else BaseTheme.TextTertiary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 手动滑块微调
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("自定义直通延迟目标", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "${ui.customLatencyMs} ms (约 ${(ui.customLatencyMs * 44.1).roundToInt()} 帧)",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = BaseTheme.Primary
+                                )
+                            }
+
+                            Slider(
+                                value = ui.customLatencyMs.toFloat(),
+                                onValueChange = { newVal ->
+                                    val rounded = newVal.roundToInt()
+                                    if (rounded != ui.customLatencyMs) {
+                                        AppHaptics.tick(view)
+                                        CastController.setCustomLatencyMs(rounded)
+                                    }
+                                },
+                                valueRange = 80f..240f,
+                                steps = 31,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = BaseTheme.Primary,
+                                    activeTrackColor = BaseTheme.Primary,
+                                    inactiveTrackColor = BaseTheme.Divider
+                                )
+                            )
+                        }
+
+                        // 架构与原理说明
+                        Text(
+                            text = "⚡ 直通引擎：低于 250ms 时跳过 50ms 重新蓄水等待，遇间隙仅补 8ms 单包空白并立即恢复，彻底消除周期性断续。如遇偶发爆音，请选择更高百分位（如 P90/P99）或切换至标准低延迟 (0.25s)。",
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp,
+                            color = BaseTheme.TextSecondary
                         )
                     }
                 }
@@ -2103,6 +2372,183 @@ private fun TabItem(
 // ==========================================
 // 辅助小组件
 // ==========================================
+/**
+ * 极低延迟与网络抖动实时动态曲线图
+ */
+@Composable
+private fun LatencyCurveChart(
+    points: List<Float>,
+    isProbing: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(BaseTheme.RadiusMd)
+            .background(BaseTheme.Surface)
+            .border(1.dp, BaseTheme.Divider, BaseTheme.RadiusMd)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        val minScale = 80f
+        val maxScale = 240f
+        val range = maxScale - minScale
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // 1. 绘制网格参考虚线 (100ms, 150ms, 200ms)
+            val dashEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f)
+            val guidelineColor = Color(0xFFE5E5EA)
+
+            val guide100Y = h - ((100f - minScale) / range) * h
+            val guide150Y = h - ((150f - minScale) / range) * h
+            val guide200Y = h - ((200f - minScale) / range) * h
+
+            drawLine(
+                color = guidelineColor,
+                start = Offset(0f, guide100Y),
+                end = Offset(w, guide100Y),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = dashEffect
+            )
+            drawLine(
+                color = guidelineColor,
+                start = Offset(0f, guide150Y),
+                end = Offset(w, guide150Y),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = dashEffect
+            )
+            drawLine(
+                color = guidelineColor,
+                start = Offset(0f, guide200Y),
+                end = Offset(w, guide200Y),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = dashEffect
+            )
+
+            // 2. 绘制采样曲线与渐变区域
+            if (points.isNotEmpty()) {
+                val stepX = if (points.size > 1) w / (points.size - 1) else w
+                val path = Path()
+                val fillPath = Path()
+
+                val firstY = h - ((points[0].coerceIn(minScale, maxScale) - minScale) / range) * h
+                path.moveTo(0f, firstY)
+                fillPath.moveTo(0f, h)
+                fillPath.lineTo(0f, firstY)
+
+                for (i in 1 until points.size) {
+                    val prevX = (i - 1) * stepX
+                    val prevY = h - ((points[i - 1].coerceIn(minScale, maxScale) - minScale) / range) * h
+                    val curX = i * stepX
+                    val curY = h - ((points[i].coerceIn(minScale, maxScale) - minScale) / range) * h
+
+                    val midX = (prevX + curX) / 2f
+                    path.cubicTo(midX, prevY, midX, curY, curX, curY)
+                    fillPath.cubicTo(midX, prevY, midX, curY, curX, curY)
+                }
+
+                fillPath.lineTo(w, h)
+                fillPath.close()
+
+                // 阴影渐变填充
+                drawPath(
+                    path = fillPath,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0x2834C759),
+                            Color(0x0234C759)
+                        )
+                    )
+                )
+
+                // 绿色平滑曲线描边
+                drawPath(
+                    path = path,
+                    color = Color(0xFF34C759),
+                    style = Stroke(
+                        width = 2.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                )
+
+                // 最后一个采样点高亮脉冲光晕
+                val lastX = (points.size - 1) * stepX
+                val lastY = h - ((points.last().coerceIn(minScale, maxScale) - minScale) / range) * h
+
+                drawCircle(
+                    color = Color(0x3334C759),
+                    radius = 7.dp.toPx(),
+                    center = Offset(lastX, lastY)
+                )
+                drawCircle(
+                    color = Color(0xFF34C759),
+                    radius = 3.5.dp.toPx(),
+                    center = Offset(lastX, lastY)
+                )
+            }
+        }
+
+        // 3. 标签与说明覆盖层
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("240ms (上限)", fontSize = 10.sp, color = BaseTheme.TextTertiary)
+                if (points.isNotEmpty()) {
+                    Text(
+                        "实时推荐: ${points.last().roundToInt()}ms",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF34C759)
+                    )
+                }
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("200ms", fontSize = 9.sp, color = BaseTheme.TextTertiary)
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("150ms", fontSize = 9.sp, color = BaseTheme.TextTertiary)
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Text("100ms", fontSize = 9.sp, color = BaseTheme.TextTertiary)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("80ms (极限)", fontSize = 10.sp, color = BaseTheme.TextTertiary)
+                Text(
+                    if (isProbing) "正在实时采样 (${points.size}/50 点)" else "采样就绪",
+                    fontSize = 10.sp,
+                    color = BaseTheme.TextTertiary
+                )
+            }
+        }
+
+        // 空状态提示
+        if (points.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (isProbing) "正在收集首次局域网探测数据..." else "点击下方「开始持续探测」绘制实时网络抖动曲线",
+                    fontSize = 12.sp,
+                    color = BaseTheme.TextSecondary
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun SectionHeader(title: String) {
     Text(

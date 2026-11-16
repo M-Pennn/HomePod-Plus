@@ -147,6 +147,7 @@ object CastController {
         val streaming: Boolean = false,
         val testToneOn: Boolean = false,
         val latencyMode: LatencyMode = LatencyMode.STABLE,
+        val customLatencyMs: Int = 140,
         val robustMode: Boolean = false,
         val alacOn: Boolean = true,
         val status: String = "未连接",
@@ -178,6 +179,7 @@ object CastController {
     private const val PREFS = "homepod_plus_prefs"
     private const val KEY_MANUAL = "manual_devices"
     private const val KEY_LATENCY = "latency_mode"
+    private const val KEY_CUSTOM_LATENCY = "custom_latency_ms"
     private const val KEY_ROBUST = "robust_mode"
     private const val KEY_ALAC = "alac_on"
     private const val KEY_VOLUME = "volume"
@@ -253,7 +255,10 @@ object CastController {
         DetailedLogger.init(context.applicationContext)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val modeName = prefs.getString(KEY_LATENCY, LatencyMode.STABLE.name) ?: LatencyMode.STABLE.name
-        val mode = runCatching { LatencyMode.valueOf(modeName) }.getOrDefault(LatencyMode.STABLE)
+        val mode = runCatching {
+            if (modeName == "ULTRA") LatencyMode.CUSTOM else LatencyMode.valueOf(modeName)
+        }.getOrDefault(LatencyMode.STABLE)
+        val customLatency = prefs.getInt(KEY_CUSTOM_LATENCY, 140).coerceIn(80, 240)
         val robust = prefs.getBoolean(KEY_ROBUST, false)
         val alacOn = prefs.getBoolean(KEY_ALAC, true)
         val volume = prefs.getFloat(KEY_VOLUME, 50f).coerceIn(0f, 100f)
@@ -314,6 +319,7 @@ object CastController {
         _state.update {
             it.copy(
                 latencyMode = mode,
+                customLatencyMs = customLatency,
                 robustMode = robust,
                 alacOn = alacOn,
                 volume = volume,
@@ -351,12 +357,26 @@ object CastController {
 
     fun setLatencyMode(mode: LatencyMode) {
         _state.update { it.copy(latencyMode = mode) }
-        _senders.forEach { it?.latencyMode = mode }
+        _senders.forEach {
+            it?.latencyMode = mode
+            it?.customLatencyMs = _state.value.customLatencyMs
+        }
         contextForPrefs?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             ?.edit()
             ?.putString(KEY_LATENCY, mode.name)
             ?.apply()
         addLog("延迟模式: ${mode.name}")
+    }
+
+    fun setCustomLatencyMs(ms: Int) {
+        val clamped = ms.coerceIn(80, 240)
+        _state.update { it.copy(customLatencyMs = clamped) }
+        _senders.forEach { it?.customLatencyMs = clamped }
+        contextForPrefs?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putInt(KEY_CUSTOM_LATENCY, clamped)
+            ?.apply()
+        addLog("设置极速直通延迟: ${clamped}ms")
     }
 
     fun setRobustMode(on: Boolean) {

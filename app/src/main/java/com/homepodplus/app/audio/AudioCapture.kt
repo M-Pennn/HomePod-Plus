@@ -9,6 +9,7 @@ import android.media.AudioTimestamp
 import android.media.projection.MediaProjection
 import android.os.SystemClock
 import com.homepodplus.app.DetailedLogger
+import com.homepodplus.app.LatencyProber
 
 /**
  * Captures any app's audio via MediaProjection + AudioPlaybackCapture
@@ -109,6 +110,8 @@ class AudioCapture(
             val readEnd = SystemClock.elapsedRealtimeNanos()
             if (n > 0) {
                 val took = readEnd - readStart
+                val tookMs = took / 1_000_000f
+                LatencyProber.liveAudioJitterMs = LatencyProber.liveAudioJitterMs * 0.9f + tookMs * 0.1f
                 readCount++
                 if (took > maxReadNanos) maxReadNanos = took
                 if (took > 50_000_000L) gapCount++

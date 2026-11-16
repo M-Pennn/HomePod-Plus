@@ -425,6 +425,7 @@ class CastService : Service() {
             }
         ).apply {
             latencyMode = CastController.state.value.latencyMode
+            customLatencyMs = CastController.state.value.customLatencyMs
             robustMode = CastController.state.value.robustMode
             alacOn = CastController.state.value.alacOn
         }
