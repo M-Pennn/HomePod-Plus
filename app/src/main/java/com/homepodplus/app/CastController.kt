@@ -250,6 +250,7 @@ object CastController {
 
     fun loadManual(context: Context) {
         contextForPrefs = context.applicationContext
+        DetailedLogger.init(context.applicationContext)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val modeName = prefs.getString(KEY_LATENCY, LatencyMode.STABLE.name) ?: LatencyMode.STABLE.name
         val mode = runCatching { LatencyMode.valueOf(modeName) }.getOrDefault(LatencyMode.STABLE)
@@ -465,6 +466,7 @@ object CastController {
 
     fun addLog(line: String) {
         Log.d("HomePodPlus", line)
+        DetailedLogger.log("App", line)
         val ctx = contextForPrefs
         if (ctx != null) {
             logExecutor.execute {

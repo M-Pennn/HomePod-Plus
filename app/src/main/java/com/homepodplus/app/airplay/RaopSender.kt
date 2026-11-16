@@ -5,6 +5,7 @@ import com.homepodplus.app.airplay.AirplayCrypto.chacha20Poly1305Encrypt
 import com.homepodplus.app.airplay.AirplayCrypto.counterNonce8
 import com.homepodplus.app.airplay.AirplayCrypto.hkdfSha512
 import com.homepodplus.app.audio.AudioMasterClock
+import com.homepodplus.app.DetailedLogger
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -153,6 +154,8 @@ class RaopSender(
     private var controlPort = 0
     private var eventPort = 0
     private var startTs = 0L
+    private var streamStartUs = 0L
+    private var streamStartElapsedNanos = 0L
     private var smoothDriftNanos = 0L
     @Volatile
     private var framesSent = 0L
@@ -808,6 +811,8 @@ class RaopSender(
 
     private fun startStreaming() {
         setState(State.STREAMING)
+        streamStartElapsedNanos = SystemClock.elapsedRealtimeNanos()
+        streamStartUs = wallMs0 * 1000L + (streamStartElapsedNanos - elapsedNanos0) / 1000L
         startTs = ntp2ts(ntpNow(), RATE)
         framesSent = 0
         smoothDriftNanos = 0L
@@ -1153,7 +1158,7 @@ class RaopSender(
     }
 
     private fun debugLog(msg: String) {
-        if (state == State.PAIRING || state == State.HANDSHAKE) {
+        if (state == State.PAIRING || state == State.HANDSHAKE || DetailedLogger.isRecording) {
             listener.onLog(msg)
         }
     }
@@ -1355,14 +1360,18 @@ class RaopSender(
             var clockLogged = false
             var cleanWindows = 0
             var isPrebuffering = true
+            // 水位与预缓冲必须适配当前的 latencyFrames：
+            // 本地蓄水绝不能超过音箱端预缓冲，否则数据一出手机就已经在音箱端超时
+            val targetBufferFrames = minOf(TARGET_BUFFER_FRAMES, latencyFrames * 3 / 4)
+            val initialPrebufferFrames = minOf(INITIAL_PREBUFFER_FRAMES, latencyFrames / 2)
 
             while (running) {
                 val now = SystemClock.elapsedRealtimeNanos()
                 val available = ring.availableFrames()
 
-                // 初始或断流后的预缓冲蓄水阶段：至少累积 INITIAL_PREBUFFER_FRAMES 后才发真实数据，杜绝开播边缘欠载
+                // 初始或断流后的预缓冲蓄水阶段：至少累积 initialPrebufferFrames 后才发真实数据，杜绝开播边缘欠载
                 if (isPrebuffering) {
-                    if (available < INITIAL_PREBUFFER_FRAMES) {
+                    if (available < initialPrebufferFrames) {
                         parkNanosPrecisely(now + 2_000_000L)
                         nextSend = SystemClock.elapsedRealtimeNanos()
                         continue
@@ -1399,10 +1408,10 @@ class RaopSender(
                 }
 
                 // 核心：环形缓冲水线闭环比例负反馈微调 (PID P-Controller)
-                // 实时消除物理时钟微小 ppm 漂移，将环形缓冲区水位永久锁定在目标 TARGET_BUFFER_FRAMES (~200ms)
+                // 实时消除物理时钟微小 ppm 漂移，将环形缓冲区水位永久锁定在目标 targetBufferFrames
                 // 水位高于目标时微调加速发包（消减积水），水位低于目标时微调减速发包（积累水位）
                 // 调整幅度严格限制在 ±1.0% 以内，不影响听感，且彻底避免 1 小时后缓冲区干涸或溢出破音
-                val waterError = available - TARGET_BUFFER_FRAMES
+                val waterError = available - targetBufferFrames
                 val waterAdjustmentNanos = (waterError * 40L).coerceIn(-80_000L, 80_000L)
                 periodNanos = basePeriod - waterAdjustmentNanos
 
@@ -1611,9 +1620,12 @@ class RaopSender(
         if (size < 8) return
         val type = data[1].toInt() and 0x7F
         if (type != 0x55) return
-        lossRequests.incrementAndGet()
         val lostSeq = ((data[4].toInt() and 0xFF) shl 8) or (data[5].toInt() and 0xFF)
         val lostCount = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
+        if (DetailedLogger.isRecording) {
+            DetailedLogger.log("RaopSender-${device.name}", "收到 0x55 丢包重发请求: startSeq=$lostSeq count=$lostCount")
+        }
+        lossRequests.incrementAndGet()
         lossPackets.addAndGet(lostCount.toLong())
         for (i in 0 until lostCount) {
             val s = (lostSeq + i) and 0xFFFF
@@ -1853,8 +1865,9 @@ class RaopSender(
         val sock = audioSock ?: return
         // 交给独立发送线程：pacer 不再阻塞在 UDP send 上。
         // 超过接收端预缓冲窗口的过期包会被发送线程丢弃，避免弱网恢复后补发陈年老包。
+        val usefulMarginNanos = minOf(30_000_000L, latencyFrames * 1_000_000_000L / RATE / 4)
         val usefulUntil = SystemClock.elapsedRealtimeNanos() +
-            latencyFrames * 1_000_000_000L / RATE - 50_000_000L
+            latencyFrames * 1_000_000_000L / RATE - usefulMarginNanos
         synchronized(audioTxLock) {
             if (audioTxQueue.size >= AUDIO_TX_MAX) {
                 // 队列满时丢最旧、保最新：离播放时刻最近的音频优先发送，旧的交给 0x55 重传
@@ -1899,7 +1912,7 @@ class RaopSender(
         if (first) {
             smoothDriftNanos = 0L
         } else {
-            val actualElapsedNanos = SystemClock.elapsedRealtimeNanos() - elapsedNanos0
+            val actualElapsedNanos = SystemClock.elapsedRealtimeNanos() - streamStartElapsedNanos
             val sec = curFrames / RATE
             val remFrames = curFrames % RATE
             val frameNanos = sec * 1_000_000_000L + remFrames * 1_000_000_000L / RATE
@@ -1913,7 +1926,7 @@ class RaopSender(
         val remFrames = curFrames % RATE
         val frameNanos = sec * 1_000_000_000L + remFrames * 1_000_000_000L / RATE
         val correctedElapsedNanos = frameNanos + smoothDriftNanos
-        val totalUs = wallMs0 * 1000L + (correctedElapsedNanos / 1000L)
+        val totalUs = streamStartUs + (correctedElapsedNanos / 1000L)
         val s = totalUs / 1_000_000L
         val frac = totalUs % 1_000_000L
         val curNtp = ((s + 0x83AA7E80L) shl 32) or ((frac shl 32) / 1_000_000L)
@@ -1930,6 +1943,12 @@ class RaopSender(
         putU32(pkt, 16, now)
         val addr = deviceAddress ?: InetAddress.getByName(device.host)
         controlSock?.send(DatagramPacket(pkt, pkt.size, addr, controlPort))
+        if (DetailedLogger.isRecording) {
+            DetailedLogger.log(
+                "RaopSender-${device.name}",
+                "0xD4 NTP同步包: curFrames=$curFrames, ntp=0x${java.lang.Long.toHexString(curNtp)}, drift=${smoothDriftNanos / 1000}us"
+            )
+        }
     }
 
     private fun rtptime32(): Long = (latencyFrames + framesSent) and 0xFFFFFFFFL

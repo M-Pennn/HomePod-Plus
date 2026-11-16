@@ -1,11 +1,11 @@
-# HomePod + — 安卓 AirPlay 2 多机/双机智能音频投送器 (v2.1.0)
+# HomePod + — 安卓 AirPlay 2 多机/双机智能音频投送器 (v2.2.0)
 
 > **让安卓手机自由投送音频至 Apple HomePod / HomePod mini / Apple TV，支持 1~4 台多音箱智能协同、无线立体声配对、独立声道路由、从属音量联动与定时防破音重连。**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-green.svg)](https://developer.android.com/about/versions/10)
 [![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-black.svg)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.2.0-black.svg)](https://github.com)
 
 **语言 / Language：**
 [简体中文](README.md) | [English](README.en.md)
@@ -72,6 +72,12 @@
 - **物理音量按键联动**：投送时按压手机侧边物理音量增减键，直接同步调节 HomePod 音量（可在配置中开关）。
 - **控制中心磁贴（TileService）**：下拉状态栏即可添加快捷磁贴，单击即刻启停投送，**长按快捷磁贴直达 App 主页**。
 - **系统日志一键复制**：运行日志顶部配备「复制全部」按钮，快速排查网络环境与设备连接状态。
+
+### 10. 📋 详细诊断日志与一键 ZIP 打包导出 (v2.2.0)
+- **全量收集诊断日志**：深入捕获 AirPlay 瞬时认证、RTSP 信令交互、0xD4 NTP 同步授时、0x55 丢包重传、环形缓冲水线调节、系统音频捕获节奏以及底层进程 Logcat 诊断；
+- **安全限时与随时手动结束**：支持一键开启，具备最长 10 分钟自动停止保护机制，同时支持随时手动提前结束，常驻胶囊展示实时剩余时间；
+- **自动存档最近 3 次**：严格自动轮转并保留最近 3 次日志记录，杜绝存储空间无节制占用；
+- **一键打包导出 ZIP**：提供一键「打包导出最近三次日志为 ZIP」功能，调起系统标准分享面板（微信、QQ、网盘、邮件或保存到本地），极大方便用户在遇到卡顿、杂音或连接问题时快速提交给 AI 或开发者分析定位根本原因。
 
 ---
 

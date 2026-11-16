@@ -315,6 +315,9 @@ private fun AppScaffold(
     onClearLogs: () -> Unit = {}
 ) {
     val hazeState = remember { HazeState() }
+    val detailedLogState by DetailedLogger.state.collectAsState()
+    val context = LocalContext.current
+    val view = LocalView.current
 
     MaterialTheme(colorScheme = BaseTheme.ColorScheme) {
         Box(
@@ -361,6 +364,57 @@ private fun AppScaffold(
                     .navigationBarsPadding()
                     .padding(horizontal = 24.dp, vertical = 16.dp)
             )
+
+            // 详细日志录制中顶部指示器悬浮胶囊
+            AnimatedVisibility(
+                visible = detailedLogState.isRecording,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Card(
+                    shape = BaseTheme.RadiusPill,
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEBEE)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(BaseTheme.Danger)
+                            )
+                            Text(
+                                text = "详细日志记录中 (剩余 ${formatDuration(detailedLogState.remainingSeconds.toLong())})",
+                                color = BaseTheme.Danger,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                AppHaptics.confirm(view)
+                                DetailedLogger.stopRecording(context, "手动结束")
+                            }
+                        ) {
+                            Text("结束", color = BaseTheme.Danger, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
 
             // 权限拒绝提示弹窗
             if (ui.accessDeniedAlert) {
@@ -767,6 +821,7 @@ private fun ConfigScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val scrollState = rememberScrollState()
+    val detailedLogState by DetailedLogger.state.collectAsState()
 
     var deviceCount by remember(ui.dualConfig) { mutableIntStateOf(ui.dualConfig.deviceCount) }
 
@@ -1574,8 +1629,187 @@ private fun ConfigScreen(
             }
         }
 
-        // 模块 4：系统运行日志
-        SectionHeader("系统日志")
+        // 模块 4：详细诊断日志 (用于问题排查与分析)
+        SectionHeader("详细诊断日志 (问题排查)")
+        Card(
+            shape = BaseTheme.RadiusLg,
+            colors = CardDefaults.cardColors(containerColor = BaseTheme.SurfaceSecondary),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 顶部状态与控制按钮
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (detailedLogState.isRecording) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(BaseTheme.Danger)
+                                )
+                            }
+                            Text(
+                                text = if (detailedLogState.isRecording) "正在记录详细日志..." else "记录详细诊断日志",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (detailedLogState.isRecording) BaseTheme.Danger else BaseTheme.TextPrimary
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (detailedLogState.isRecording)
+                                "最长开启 10 分钟 · 剩余 ${formatDuration(detailedLogState.remainingSeconds.toLong())}"
+                            else
+                                "全量收集AirPlay时钟、RTP及底层系统诊断",
+                            fontSize = 12.sp,
+                            color = BaseTheme.TextSecondary
+                        )
+                    }
+
+                    if (detailedLogState.isRecording) {
+                        Button(
+                            onClick = {
+                                AppHaptics.confirm(view)
+                                DetailedLogger.stopRecording(context, "手动结束")
+                            },
+                            shape = BaseTheme.RadiusPill,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BaseTheme.Danger,
+                                contentColor = Color.White
+                            ),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("手动结束", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                AppHaptics.confirm(view)
+                                DetailedLogger.startRecording(context)
+                            },
+                            shape = BaseTheme.RadiusPill,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BaseTheme.Primary,
+                                contentColor = Color.White
+                            ),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("开启记录", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+
+                // 说明提示框
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(BaseTheme.RadiusMd)
+                        .background(BaseTheme.Surface)
+                        .padding(10.dp)
+                ) {
+                    Text(
+                        text = "💡 功能说明：开启后将深度收集全部涉及到的音频数据流、锁相时钟对齐（0xD4/0x55）、丢包重传及底层系统 Logcat 日志。最长开启 10 分钟或随时手动结束，自动保留最近 3 次记录。遇到问题时可直接导出 ZIP 压缩包交由 AI 进行快速根因分析。",
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = BaseTheme.TextSecondary
+                    )
+                }
+
+                // 最近三次日志记录列表
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "最近日志存档（自动保留最近 3 次，共 ${detailedLogState.savedSessions.size}/3 次）",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = BaseTheme.TextSecondary
+                    )
+
+                    if (detailedLogState.savedSessions.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(BaseTheme.RadiusMd)
+                                .background(BaseTheme.Surface)
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "暂无详细日志存档。遇到播放异常时请开启记录并复现问题",
+                                fontSize = 12.sp,
+                                color = BaseTheme.TextTertiary
+                            )
+                        }
+                    } else {
+                        detailedLogState.savedSessions.forEachIndexed { idx, s ->
+                            Card(
+                                shape = BaseTheme.RadiusMd,
+                                colors = CardDefaults.cardColors(containerColor = BaseTheme.Surface),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "#${idx + 1}  ${s.formattedTime}",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = BaseTheme.TextPrimary
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "时长: ${s.formattedDuration} · 大小: ${s.formattedSize}",
+                                            fontSize = 11.sp,
+                                            color = BaseTheme.TextSecondary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 打包导出 ZIP 按钮
+                OutlinedButton(
+                    onClick = {
+                        AppHaptics.confirm(view)
+                        DetailedLogger.shareZip(context)
+                    },
+                    enabled = detailedLogState.savedSessions.isNotEmpty(),
+                    shape = BaseTheme.RadiusPill,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                ) {
+                    Text(
+                        text = if (detailedLogState.savedSessions.isNotEmpty())
+                            "打包导出最近三次日志为 ZIP (${detailedLogState.savedSessions.size}次)"
+                        else
+                            "打包导出最近三次日志为 ZIP",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        // 模块 5：系统运行日志
+        SectionHeader("实时传输日志")
         Card(
             shape = BaseTheme.RadiusLg,
             colors = CardDefaults.cardColors(containerColor = BaseTheme.SurfaceSecondary),

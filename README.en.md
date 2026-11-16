@@ -1,11 +1,11 @@
-# HomePod + — AirPlay 2 Smart Multi/Dual Audio Streamer for Android (v2.1.0)
+# HomePod + — AirPlay 2 Smart Multi/Dual Audio Streamer for Android (v2.2.0)
 
 > **Stream any audio from Android to Apple HomePod / HomePod mini / Apple TV with 1~4 multi-speaker smart sync, wireless stereo pairing, independent channel routing, slave volume tracking, and scheduled anti-crackling auto-reconnect.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-green.svg)](https://developer.android.com/about/versions/10)
 [![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-black.svg)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.2.0-black.svg)](https://github.com)
 
 **Language / 语言：**
 [English](README.en.md) | [简体中文](README.md)
@@ -70,6 +70,12 @@ Due to Apple's walled garden, HomePod and HomePod mini only natively support Air
 - **Hardware Volume Keys**: Adjust HomePod volume directly with physical phone buttons.
 - **Quick Settings Tile**: Tap to start/stop stream; **long-press to open app directly**.
 - **One-Tap Log Copy**: Copy full system diagnostics logs in one click.
+
+### 10. 📋 Detailed Diagnostic Logging & One-Click ZIP Export (v2.2.0)
+- **Comprehensive Log Collection**: In-depth trace of AirPlay transient authentication, RTSP transactions, 0xD4 NTP timing synchronization, 0x55 packet loss / retransmission handling, ring buffer waterline regulation, audio capture cadence, and underlying system Logcat diagnostics;
+- **Safety Timeout & Manual Control**: Can be toggled on demand with an automatic 10-minute safety stop limit, with support for manual stop anytime and a persistent sticky countdown banner;
+- **Automatic 3-Session Retention**: Automatically retains only the 3 most recent diagnostic sessions, preventing excessive disk usage;
+- **One-Click ZIP Export**: Package and export recent sessions into a standard `.zip` file via Android's native share sheet (WeChat, Cloud Drive, Email, or Local Files) for rapid AI and developer troubleshooting.
 
 ---
 

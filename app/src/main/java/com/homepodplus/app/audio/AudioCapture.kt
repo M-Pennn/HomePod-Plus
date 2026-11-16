@@ -8,6 +8,7 @@ import android.media.AudioRecord
 import android.media.AudioTimestamp
 import android.media.projection.MediaProjection
 import android.os.SystemClock
+import com.homepodplus.app.DetailedLogger
 
 /**
  * Captures any app's audio via MediaProjection + AudioPlaybackCapture
@@ -97,6 +98,7 @@ class AudioCapture(
         var maxReadNanos = 0L
         var gapCount = 0L
         var lastDiagNanos = SystemClock.elapsedRealtimeNanos()
+        var lastDetailedDiagNanos = lastDiagNanos
         while (running) {
             val readStart = SystemClock.elapsedRealtimeNanos()
             val n = try {
@@ -118,6 +120,14 @@ class AudioCapture(
                 } catch (e: InterruptedException) {
                     break
                 }
+            }
+            if (DetailedLogger.isRecording && readEnd - lastDetailedDiagNanos > 5_000_000_000L) {
+                lastDetailedDiagNanos = readEnd
+                val maxMs = maxReadNanos / 1_000_000L
+                DetailedLogger.log(
+                    "AudioCapture",
+                    "音频捕获状态: 采样率=${sampleRate}Hz 实测速率=${String.format(java.util.Locale.US, "%.1f", measuredRateHz)}Hz 最大单包等待=${maxMs}ms >50ms延迟次数=$gapCount"
+                )
             }
             if (readEnd - lastDiagNanos > 30_000_000_000L) {
                 lastDiagNanos = readEnd
