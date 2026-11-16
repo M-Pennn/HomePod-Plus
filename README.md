@@ -1,11 +1,11 @@
-# HomePod + — 安卓 AirPlay 2 多机/双机智能音频投送器 (v2.0.0)
+# HomePod + — 安卓 AirPlay 2 多机/双机智能音频投送器 (v2.1.0)
 
 > **让安卓手机自由投送音频至 Apple HomePod / HomePod mini / Apple TV，支持 1~4 台多音箱智能协同、无线立体声配对、独立声道路由、从属音量联动与定时防破音重连。**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-green.svg)](https://developer.android.com/about/versions/10)
 [![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![Version](https://img.shields.io/badge/Version-2.0.0-black.svg)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.1.0-black.svg)](https://github.com)
 
 **语言 / Language：**
 [简体中文](README.md) | [English](README.en.md)
@@ -39,8 +39,9 @@
   - **固定差值模式**：例如设定副音箱为 `主音箱 - 10%`，随主音箱增减保持固定差额；
   - **相对比例模式**：按比例跟随主音箱音量缩放（例如 0.8x）。
 
-### 4. ⏱️ 长播放防破音与定时自动平滑重连
-- **底层时钟频偏自适应**：内置闭环水线负反馈算法与 0xD4 NTP 真实授时对齐，彻底消除超长播放因局域网微随时钟漂移导致的累积杂音与爆音。
+### 4. ⏱️ 纯净音质引擎与定时平滑重连
+- **数学同源锁相时钟（消除气泡杂音）**：将 AirPlay 0xD4 NTP 同步时间戳与实际发出的 RTP 采样绝对帧数严密同源锁定，消除系统休眠调度引入的毫秒级相位抖动，彻底解决音箱时钟伺服器因采样滑动引发的随机偶发微小“黑胶气泡/爆豆”杂音（Pop/Crackle）。
+- **底层时钟频偏自适应**：内置闭环水线负反馈算法与基准授时对齐，有效抑制超长播放时局域网微随时钟漂移导致的累积杂音与爆音。
 - **定时平滑重连机制**：配置中提供「定时自动重连」开关，用户可自由输入分钟数（如建议 40~60 分钟）：
   - 到达设定时间后，后台毫秒级断开并快速重新建立 AirPlay RTSP 链路；
   - **系统屏幕/音频捕获授权保持活跃，全程无需重新弹窗授权**；
@@ -161,10 +162,11 @@ adb install -r HomePodPlus-release.apk
 </details>
 
 <details>
-<summary><b>Q3: 长时间连续播放（1小时以上）为什么会出现破音？如何解决？</b></summary>
-部分音箱在长时间接收流媒体时，可能由于局域网微弱时钟漂移或设备物理缓冲区耗尽引发持续杂音。在 2.0.0 版本中：<br/>
-1. 我们重构了时钟同步与水线算法，提升了硬件对齐稳定性；<br/>
-2. 同时在配置页提供了<b>「定时自动重连」</b>功能。开启并设定如 50 分钟，App 将在播放到达设定时间时静默快速重新握手（无需重新授权录屏），以 1 秒空白彻底刷新音箱缓冲，彻底根治长时间播放破音。
+<summary><b>Q3: 长时间连续播放（1小时以上）为什么会出现破音或偶发气泡杂音？如何解决？</b></summary>
+部分音箱在长时间接收流媒体时，可能由于局域网微弱时钟漂移或设备物理缓冲区耗尽引发杂音：<br/>
+1. <b>消除气泡/爆豆音（v2.1.0）</b>：通过数学同源锁相机制，将 0xD4 NTP 同步包与 RTP 绝对音频时间线强绑定，消除系统休眠调度引入的相位突变，杜绝音箱内部采样滑动引发的微小杂音；<br/>
+2. <b>长播放水线调控</b>：闭环负反馈平滑调控缓冲区水位，稳定对抗网络抖动；<br/>
+3. <b>定时自动平滑重连</b>：在配置页提供<b>「定时自动重连」</b>开关。开启并设定如 50 分钟，App 将在到达设定时间时静默快速重新建立链路（无需重新授权录屏），以约 1 秒空白彻底刷新硬件缓冲，保障全天候超长稳定播放。
 </details>
 
 <details>

@@ -153,6 +153,8 @@ class RaopSender(
     private var controlPort = 0
     private var eventPort = 0
     private var startTs = 0L
+    private var smoothDriftNanos = 0L
+    @Volatile
     private var framesSent = 0L
     private var seq = 0
     private var firstAudio = true
@@ -808,6 +810,7 @@ class RaopSender(
         setState(State.STREAMING)
         startTs = ntp2ts(ntpNow(), RATE)
         framesSent = 0
+        smoothDriftNanos = 0L
         firstAudio = true
         // 握手期间捕获的音频是“过去时”，清空后再开始，避免开播突发追赶
         ring.clear()
@@ -1885,21 +1888,48 @@ class RaopSender(
 
     private fun sendSyncPacket(first: Boolean) {
         if (serverPort == 0 || controlPort == 0) return
-        // 关键修复：NTP 时间戳必须取真实当刻的 ntpNow()，与 timingSock 授时保持 100% 绝对一致，
-        // 避免 1 小时物理时钟累计漂移导致 HomePod 判定失步并频繁发起 0x55 重传丢帧破音
-        val curNtp = ntpNow()
-        val now = rtptime32()
+        val curFrames = framesSent
+
+        // 核心锁相伺服（Slew-Rate Limited Clock Servo）：
+        // 1. 彻底消灭气泡杂音（Pop/Crackle）：将 0xD4 NTP 时间戳与音频发帧严格同源绑定，
+        //    将每 500ms 同步周期的调整步长严格限制在 ±45 微秒以内（约 ±90 ppm 物理晶振容差），
+        //    杜绝线程休眠调度抖动带来的毫秒级相位阶跃突变，HomePod 锁相环永不发生采样滑动；
+        // 2. 彻底消灭长播放卡顿与缓冲区干涸：缓变积分跟踪手机硬件实际音频捕获时钟与单调物理时钟的累积漂移，
+        //    使 0xD4 时间戳与 timing 授时保持在毫秒级微小误差内，在不需要定时重连的情况下也能长期稳定运行数小时。
+        if (first) {
+            smoothDriftNanos = 0L
+        } else {
+            val actualElapsedNanos = SystemClock.elapsedRealtimeNanos() - elapsedNanos0
+            val sec = curFrames / RATE
+            val remFrames = curFrames % RATE
+            val frameNanos = sec * 1_000_000_000L + remFrames * 1_000_000_000L / RATE
+            val rawDriftNanos = actualElapsedNanos - frameNanos - smoothDriftNanos
+            val desiredAdj = (rawDriftNanos * 0.015).toLong()
+            val stepAdj = desiredAdj.coerceIn(-45_000L, 45_000L)
+            smoothDriftNanos += stepAdj
+        }
+
+        val sec = curFrames / RATE
+        val remFrames = curFrames % RATE
+        val frameNanos = sec * 1_000_000_000L + remFrames * 1_000_000_000L / RATE
+        val correctedElapsedNanos = frameNanos + smoothDriftNanos
+        val totalUs = wallMs0 * 1000L + (correctedElapsedNanos / 1000L)
+        val s = totalUs / 1_000_000L
+        val frac = totalUs % 1_000_000L
+        val curNtp = ((s + 0x83AA7E80L) shl 32) or ((frac shl 32) / 1_000_000L)
+
+        val now = (latencyFrames + curFrames) and 0xFFFFFFFFL
         val pkt = ByteArray(20)
         pkt[0] = if (first) 0x90.toByte() else 0x80.toByte()
         pkt[1] = 0xD4.toByte()
         pkt[2] = 0
         pkt[3] = 7
-        putU32(pkt, 4, (now - latencyFrames) and 0xFFFFFFFFL)
+        putU32(pkt, 4, curFrames and 0xFFFFFFFFL)
         putU32(pkt, 8, (curNtp ushr 32) and 0xFFFFFFFFL)
         putU32(pkt, 12, curNtp and 0xFFFFFFFFL)
         putU32(pkt, 16, now)
         val addr = deviceAddress ?: InetAddress.getByName(device.host)
-        controlSock!!.send(DatagramPacket(pkt, pkt.size, addr, controlPort))
+        controlSock?.send(DatagramPacket(pkt, pkt.size, addr, controlPort))
     }
 
     private fun rtptime32(): Long = (latencyFrames + framesSent) and 0xFFFFFFFFL

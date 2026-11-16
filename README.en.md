@@ -1,11 +1,11 @@
-# HomePod + — AirPlay 2 Smart Multi/Dual Audio Streamer for Android (v2.0.0)
+# HomePod + — AirPlay 2 Smart Multi/Dual Audio Streamer for Android (v2.1.0)
 
 > **Stream any audio from Android to Apple HomePod / HomePod mini / Apple TV with 1~4 multi-speaker smart sync, wireless stereo pairing, independent channel routing, slave volume tracking, and scheduled anti-crackling auto-reconnect.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Android%2010%2B-green.svg)](https://developer.android.com/about/versions/10)
 [![Language](https://img.shields.io/badge/Language-Kotlin-purple.svg)](https://kotlinlang.org/)
-[![Version](https://img.shields.io/badge/Version-2.0.0-black.svg)](https://github.com)
+[![Version](https://img.shields.io/badge/Version-2.1.0-black.svg)](https://github.com)
 
 **Language / 语言：**
 [English](README.en.md) | [简体中文](README.md)
@@ -37,8 +37,9 @@ Due to Apple's walled garden, HomePod and HomePod mini only natively support Air
 - **Slave Protection**: Secondary speakers are strictly constrained to $\le$ master volume (offset range -100% ~ 0%), preventing secondary speakers from blaring abruptly.
 - **Dual Tracking Modes**: Supports both **Fixed Delta Mode** (e.g. Master - 10%) and **Ratio Mode** (e.g. 0.8x multiplier).
 
-### 4. ⏱️ Anti-Crackling Engine & Scheduled Smooth Reconnect
-- **Adaptive Clock Sync**: Closed-loop waterline negative feedback + 0xD4 NTP timing completely prevents accumulated clock drift during long playback.
+### 4. ⏱️ Pristine Soundstage Engine & Scheduled Smooth Reconnect
+- **Homologous Phase-Locked Clock (Zero Vinyl Pop/Crackle)**: Mathematically locks the AirPlay 0xD4 NTP sync timestamp directly to the actual dispatched RTP audio frame timeline, eliminating millisecond sleep scheduling jitter and preventing micro sample-slips / vinyl crackles in HomePod's internal PLL.
+- **Adaptive Waterline Control**: Closed-loop negative feedback waterline regulation suppresses long-duration clock drift artifacts.
 - **Scheduled Smooth Reconnect**: Configurable timer in minutes (e.g., 50 mins):
   - Automatically resets AirPlay links upon reaching the threshold;
   - **System audio capture remains active—no Android permission dialog is ever shown again**;
